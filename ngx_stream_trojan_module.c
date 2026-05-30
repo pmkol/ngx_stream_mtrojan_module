@@ -5,6 +5,7 @@
 #include <netdb.h>
 
 #include "ngx_stream_trojan_protocol.h"
+#include "ngx_stream_trojan_relay.h"
 
 
 #define NGX_STREAM_TROJAN_DEFAULT_BUFFER_SIZE 32768
@@ -1109,72 +1110,76 @@ ngx_stream_trojan_process_direction(ngx_stream_trojan_ctx_t *ctx,
     ngx_connection_t *src, ngx_connection_t *dst, ngx_buf_t *buf,
     ngx_uint_t *src_eof)
 {
-    ssize_t  n;
+    size_t        available, bytes, limit, loops;
+    ssize_t       n;
+    ngx_event_t  *rev;
 
     if (buf == NULL || dst == NULL) {
         return NGX_OK;
     }
 
-    while (buf->pos < buf->last) {
-        n = dst->send(dst, buf->pos, buf->last - buf->pos);
+    bytes = 0;
+    limit = ngx_stream_trojan_relay_limit(ctx->conf->buffer_size);
+    loops = 0;
+
+    for ( ;; ) {
+        while (buf->pos < buf->last) {
+            n = dst->send(dst, buf->pos, buf->last - buf->pos);
+
+            if (n == NGX_AGAIN) {
+                return NGX_OK;
+            }
+
+            if (n == NGX_ERROR) {
+                return NGX_ERROR;
+            }
+
+            buf->pos += n;
+        }
+
+        buf->pos = buf->start;
+        buf->last = buf->start;
+
+        if (src == NULL || *src_eof) {
+            return NGX_OK;
+        }
+
+        rev = src->read;
+
+        if (!rev->ready
+            || !ngx_stream_trojan_relay_should_continue(loops, bytes, limit))
+        {
+            return NGX_OK;
+        }
+
+        available = ngx_stream_trojan_relay_read_size(buf->end - buf->last,
+                                                      bytes, limit);
+        if (available == 0) {
+            return NGX_OK;
+        }
+
+        n = src->recv(src, buf->last, available);
 
         if (n == NGX_AGAIN) {
             return NGX_OK;
         }
 
-        if (n == NGX_ERROR) {
-            return NGX_ERROR;
-        }
-
-        buf->pos += n;
-    }
-
-    buf->pos = buf->start;
-    buf->last = buf->start;
-
-    if (src == NULL || *src_eof || !src->read->ready) {
-        return NGX_OK;
-    }
-
-    n = src->recv(src, buf->last, buf->end - buf->last);
-
-    if (n == NGX_AGAIN) {
-        return NGX_OK;
-    }
-
-    if (n == 0) {
-        *src_eof = 1;
-        src->read->eof = 1;
-        return NGX_OK;
-    }
-
-    if (n == NGX_ERROR) {
-        *src_eof = 1;
-        src->read->error = 1;
-        return NGX_OK;
-    }
-
-    buf->last += n;
-
-    while (buf->pos < buf->last) {
-        n = dst->send(dst, buf->pos, buf->last - buf->pos);
-
-        if (n == NGX_AGAIN) {
+        if (n == 0) {
+            *src_eof = 1;
+            rev->eof = 1;
             return NGX_OK;
         }
 
         if (n == NGX_ERROR) {
-            return NGX_ERROR;
+            *src_eof = 1;
+            rev->error = 1;
+            return NGX_OK;
         }
 
-        buf->pos += n;
+        buf->last += n;
+        bytes += (size_t) n;
+        loops++;
     }
-
-    buf->pos = buf->start;
-    buf->last = buf->start;
-
-    (void) ctx;
-    return NGX_OK;
 }
 
 
