@@ -1,0 +1,15 @@
+ngx_addon_name=ngx_stream_trojan_module
+
+if test -n "$ngx_module_link"; then
+    ngx_module_type=STREAM
+    ngx_module_name=ngx_stream_trojan_module
+    ngx_module_srcs="$ngx_addon_dir/ngx_stream_trojan_module.c \
+                     $ngx_addon_dir/ngx_stream_trojan_protocol.c"
+
+    . auto/module
+else
+    STREAM_MODULES="$STREAM_MODULES ngx_stream_trojan_module"
+    NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
+                    $ngx_addon_dir/ngx_stream_trojan_module.c \
+                    $ngx_addon_dir/ngx_stream_trojan_protocol.c"
+fi
