@@ -124,6 +124,64 @@ ngx_stream_trojan_socks5_parse_auth_response(const uint8_t *buf, size_t len)
 
 
 int
+ngx_stream_trojan_socks5_greeting_len(const uint8_t *buf, size_t len,
+    size_t *needed)
+{
+    if (buf == NULL || needed == NULL) {
+        return -1;
+    }
+
+    if (len < 2) {
+        *needed = 2;
+        return 1;
+    }
+
+    if (buf[0] != NGX_STREAM_TROJAN_SOCKS5_VERSION) {
+        return -1;
+    }
+
+    *needed = 2 + buf[1];
+    return len >= *needed ? 0 : 1;
+}
+
+
+int
+ngx_stream_trojan_socks5_select_method(const uint8_t *buf, size_t len)
+{
+    size_t i, needed;
+
+    if (ngx_stream_trojan_socks5_greeting_len(buf, len, &needed) != 0
+        || len < needed)
+    {
+        return -1;
+    }
+
+    for (i = 0; i < buf[1]; i++) {
+        if (buf[2 + i] == NGX_STREAM_TROJAN_SOCKS5_METHOD_NO_AUTH) {
+            return NGX_STREAM_TROJAN_SOCKS5_METHOD_NO_AUTH;
+        }
+    }
+
+    return NGX_STREAM_TROJAN_SOCKS5_METHOD_NONE;
+}
+
+
+int
+ngx_stream_trojan_socks5_build_method_response(uint8_t method, uint8_t *out,
+    size_t out_len)
+{
+    if (out == NULL || out_len < 2) {
+        return -1;
+    }
+
+    out[0] = NGX_STREAM_TROJAN_SOCKS5_VERSION;
+    out[1] = method;
+
+    return 0;
+}
+
+
+int
 ngx_stream_trojan_socks5_build_request(uint8_t command,
     const ngx_stream_trojan_addr_t *addr, uint8_t *out, size_t out_len,
     size_t *written)
@@ -181,6 +239,124 @@ ngx_stream_trojan_socks5_build_request(uint8_t command,
     default:
         return -1;
     }
+}
+
+
+int
+ngx_stream_trojan_socks5_request_len(const uint8_t *buf, size_t len,
+    size_t *needed)
+{
+    size_t addr_len;
+    int rc;
+
+    if (buf == NULL || needed == NULL) {
+        return -1;
+    }
+
+    if (len < 4) {
+        *needed = 4;
+        return 1;
+    }
+
+    if (buf[0] != NGX_STREAM_TROJAN_SOCKS5_VERSION || buf[2] != 0) {
+        return -1;
+    }
+
+    if (buf[1] != NGX_STREAM_TROJAN_SOCKS5_CMD_CONNECT
+        && buf[1] != NGX_STREAM_TROJAN_SOCKS5_CMD_UDP_ASSOCIATE)
+    {
+        return -1;
+    }
+
+    rc = ngx_stream_trojan_socks5_addr_len(buf + 3, len - 3, &addr_len);
+    if (rc == 1) {
+        *needed = 3 + addr_len;
+        return 1;
+    }
+
+    if (rc != 0) {
+        return -1;
+    }
+
+    *needed = 3 + addr_len;
+    return 0;
+}
+
+
+int
+ngx_stream_trojan_socks5_parse_request(const uint8_t *buf, size_t len,
+    uint8_t *command, ngx_stream_trojan_addr_t *addr)
+{
+    size_t needed;
+
+    if (command == NULL || addr == NULL
+        || ngx_stream_trojan_socks5_request_len(buf, len, &needed) != 0
+        || len < needed)
+    {
+        return -1;
+    }
+
+    *command = buf[1];
+    return ngx_stream_trojan_parse_addr(buf + 3, needed - 3, addr);
+}
+
+
+int
+ngx_stream_trojan_socks5_build_response(uint8_t status,
+    const ngx_stream_trojan_addr_t *addr, uint8_t *out, size_t out_len,
+    size_t *written)
+{
+    size_t req_len;
+
+    if (addr == NULL || out == NULL || written == NULL
+        || out_len < 3 + addr->wire_len)
+    {
+        return -1;
+    }
+
+    out[0] = NGX_STREAM_TROJAN_SOCKS5_VERSION;
+    out[1] = status;
+    out[2] = 0;
+    out[3] = addr->type;
+
+    switch (addr->type) {
+    case NGX_STREAM_TROJAN_ADDR_IPV4:
+        if (addr->host_len != 4) {
+            return -1;
+        }
+        memcpy(out + 4, addr->host, 4);
+        out[8] = (uint8_t) (addr->port >> 8);
+        out[9] = (uint8_t) addr->port;
+        req_len = 10;
+        break;
+
+    case NGX_STREAM_TROJAN_ADDR_IPV6:
+        if (addr->host_len != 16) {
+            return -1;
+        }
+        memcpy(out + 4, addr->host, 16);
+        out[20] = (uint8_t) (addr->port >> 8);
+        out[21] = (uint8_t) addr->port;
+        req_len = 22;
+        break;
+
+    case NGX_STREAM_TROJAN_ADDR_DOMAIN:
+        if (addr->host_len == 0 || addr->host_len > 255) {
+            return -1;
+        }
+        out[4] = (uint8_t) addr->host_len;
+        memcpy(out + 5, addr->host, addr->host_len);
+        out[5 + addr->host_len] = (uint8_t) (addr->port >> 8);
+        out[6 + addr->host_len] = (uint8_t) addr->port;
+        req_len = 7 + addr->host_len;
+        break;
+
+    default:
+        return -1;
+    }
+
+    *written = req_len;
+    return 0;
 }
 
 

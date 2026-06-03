@@ -26,7 +26,19 @@ int ngx_stream_trojan_socks5_build_auth(const uint8_t *username,
     uint8_t *out, size_t out_len, size_t *written);
 int ngx_stream_trojan_socks5_parse_auth_response(const uint8_t *buf,
     size_t len);
+int ngx_stream_trojan_socks5_greeting_len(const uint8_t *buf, size_t len,
+    size_t *needed);
+int ngx_stream_trojan_socks5_select_method(const uint8_t *buf, size_t len);
+int ngx_stream_trojan_socks5_build_method_response(uint8_t method,
+    uint8_t *out, size_t out_len);
 int ngx_stream_trojan_socks5_build_request(uint8_t command,
+    const ngx_stream_trojan_addr_t *addr, uint8_t *out, size_t out_len,
+    size_t *written);
+int ngx_stream_trojan_socks5_request_len(const uint8_t *buf, size_t len,
+    size_t *needed);
+int ngx_stream_trojan_socks5_parse_request(const uint8_t *buf, size_t len,
+    uint8_t *command, ngx_stream_trojan_addr_t *addr);
+int ngx_stream_trojan_socks5_build_response(uint8_t status,
     const ngx_stream_trojan_addr_t *addr, uint8_t *out, size_t out_len,
     size_t *written);
 int ngx_stream_trojan_socks5_response_len(const uint8_t *buf, size_t len,

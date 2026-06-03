@@ -3,6 +3,7 @@
 #include <ngx_stream.h>
 
 #include <netdb.h>
+#include <sys/socket.h>
 
 #include "ngx_stream_trojan_protocol.h"
 #include "ngx_stream_trojan_ip_prefer.h"
@@ -14,6 +15,7 @@
 #define NGX_STREAM_TROJAN_SOCKS5_BUFFER_SIZE 1024
 #define NGX_STREAM_TROJAN_UDP_BUFFER_SIZE \
     (NGX_STREAM_TROJAN_MAX_UDP_PAYLOAD + NGX_STREAM_TROJAN_MAX_ADDR_LEN + 4)
+#define NGX_STREAM_TROJAN_SOCKS5_UDP_SESSION_BUCKETS 64
 
 
 typedef enum {
@@ -46,9 +48,28 @@ typedef enum {
 } ngx_stream_trojan_socks5_step_e;
 
 
+typedef enum {
+    ngx_stream_trojan_in_socks5_step_greeting = 0,
+    ngx_stream_trojan_in_socks5_step_method_write,
+    ngx_stream_trojan_in_socks5_step_request,
+    ngx_stream_trojan_in_socks5_step_response_write
+} ngx_stream_trojan_in_socks5_step_e;
+
+
 typedef struct {
     u_char data[NGX_STREAM_TROJAN_KEY_LEN];
 } ngx_stream_trojan_key_t;
+
+
+typedef struct {
+    ngx_str_t    host;
+    in_port_t    port;
+    ngx_uint_t   set;
+    ngx_uint_t   localhost;
+} ngx_stream_trojan_server_ref_t;
+
+
+typedef struct ngx_stream_trojan_srv_conf_s ngx_stream_trojan_srv_conf_t;
 
 
 typedef struct {
@@ -64,8 +85,11 @@ typedef struct {
 } ngx_stream_trojan_outbound_t;
 
 
-typedef struct {
+struct ngx_stream_trojan_srv_conf_s {
     ngx_flag_t   enable;
+    ngx_flag_t   socks5_enable;
+    ngx_flag_t   socks5_udp_enable;
+    ngx_uint_t   socks5_ref_set;
     ngx_array_t *keys;
     ngx_addr_t  *fallback;
     ngx_msec_t   connect_timeout;
@@ -73,7 +97,9 @@ typedef struct {
     ngx_msec_t   udp_timeout;
     size_t       buffer_size;
     ngx_array_t *outbounds;
-} ngx_stream_trojan_srv_conf_t;
+    ngx_stream_trojan_srv_conf_t *effective;
+    ngx_stream_trojan_server_ref_t socks5_ref;
+};
 
 
 typedef struct ngx_stream_trojan_ctx_s ngx_stream_trojan_ctx_t;
@@ -81,6 +107,10 @@ typedef struct ngx_stream_trojan_ctx_s ngx_stream_trojan_ctx_t;
 
 typedef enum {
     ngx_stream_trojan_state_prefix = 0,
+    ngx_stream_trojan_state_socks5_in_greeting,
+    ngx_stream_trojan_state_socks5_in_request,
+    ngx_stream_trojan_state_socks5_in_response,
+    ngx_stream_trojan_state_socks5_in_udp_control,
     ngx_stream_trojan_state_request,
     ngx_stream_trojan_state_default_fallback,
     ngx_stream_trojan_state_resolving,
@@ -145,7 +175,11 @@ struct ngx_stream_trojan_ctx_s {
     ngx_connection_t           *udp6;
 #endif
     ngx_connection_t           *socks5_udp;
+    ngx_connection_t           *socks5_in_udp;
     ngx_addr_t                  socks5_udp_relay;
+    struct sockaddr_storage     socks5_udp_client;
+    socklen_t                   socks5_udp_client_socklen;
+    ngx_uint_t                  socks5_udp_client_set;
     ngx_resolver_ctx_t         *resolver_ctx;
     u_char                     *udp_in;
     size_t                      udp_in_len;
@@ -157,6 +191,9 @@ struct ngx_stream_trojan_ctx_s {
     ngx_stream_trojan_socks5_mode_e  socks5_mode;
     ngx_stream_trojan_socks5_step_e  socks5_step;
     ngx_uint_t                  socks5_connected;
+    ngx_stream_trojan_in_socks5_step_e  in_socks5_step;
+    uint8_t                     socks5_in_status;
+    ngx_uint_t                  inbound_socks5;
 };
 
 
@@ -165,9 +202,22 @@ static void ngx_stream_trojan_read_client(ngx_event_t *ev);
 static void ngx_stream_trojan_peer_handler(ngx_event_t *ev);
 static void ngx_stream_trojan_udp_read_handler(ngx_event_t *ev);
 static void ngx_stream_trojan_socks5_udp_read_handler(ngx_event_t *ev);
+static void ngx_stream_trojan_socks5_in_udp_read_handler(ngx_event_t *ev);
 static void ngx_stream_trojan_socks5_udp_control_handler(ngx_event_t *ev);
+static void ngx_stream_trojan_socks5_in_udp_control_handler(ngx_event_t *ev);
 static void ngx_stream_trojan_udp_client_write_handler(ngx_event_t *ev);
 static void ngx_stream_trojan_process_prefix(ngx_stream_trojan_ctx_t *ctx);
+static void ngx_stream_trojan_process_socks5_in(ngx_stream_trojan_ctx_t *ctx);
+static ngx_int_t ngx_stream_trojan_socks5_in_flush(
+    ngx_stream_trojan_ctx_t *ctx);
+static ngx_int_t ngx_stream_trojan_socks5_in_read(
+    ngx_stream_trojan_ctx_t *ctx, size_t needed);
+static ngx_int_t ngx_stream_trojan_socks5_in_prepare_method(
+    ngx_stream_trojan_ctx_t *ctx);
+static ngx_int_t ngx_stream_trojan_socks5_in_prepare_response(
+    ngx_stream_trojan_ctx_t *ctx, uint8_t status);
+static ngx_int_t ngx_stream_trojan_init_udp_buffers(
+    ngx_stream_trojan_ctx_t *ctx);
 static void ngx_stream_trojan_process_request(ngx_stream_trojan_ctx_t *ctx);
 static void ngx_stream_trojan_start_fallback(ngx_stream_trojan_ctx_t *ctx,
     u_char *data, size_t len);
@@ -179,6 +229,8 @@ static ngx_int_t ngx_stream_trojan_flush_default_fallback(
     ngx_stream_trojan_ctx_t *ctx);
 static void ngx_stream_trojan_start_tcp(ngx_stream_trojan_ctx_t *ctx);
 static void ngx_stream_trojan_start_udp(ngx_stream_trojan_ctx_t *ctx);
+static ngx_buf_t *ngx_stream_trojan_create_temp_buf(ngx_pool_t *pool,
+    size_t size);
 static void ngx_stream_trojan_start_socks5_tcp(ngx_stream_trojan_ctx_t *ctx);
 static void ngx_stream_trojan_start_socks5_udp(ngx_stream_trojan_ctx_t *ctx);
 static ngx_int_t ngx_stream_trojan_start_resolver(ngx_stream_trojan_ctx_t *ctx,
@@ -205,6 +257,8 @@ static ngx_int_t ngx_stream_trojan_socks5_response_to_ngx_addr(
     ngx_addr_t *out);
 static ngx_int_t ngx_stream_trojan_send_socks5_udp_frame(
     ngx_stream_trojan_ctx_t *ctx, ngx_stream_trojan_udp_frame_t *frame);
+static ngx_int_t ngx_stream_trojan_forward_socks5_udp_packet(
+    ngx_stream_trojan_ctx_t *ctx, u_char *packet, size_t packet_len);
 static ngx_stream_trojan_outbound_t *ngx_stream_trojan_select_outbound(
     ngx_stream_trojan_ctx_t *ctx, ngx_stream_trojan_addr_t *target);
 static ngx_uint_t ngx_stream_trojan_outbound_type(
@@ -239,10 +293,25 @@ static ngx_int_t ngx_stream_trojan_parse_ip_prefer(ngx_str_t *value,
     ngx_uint_t *prefer);
 static ngx_int_t ngx_stream_trojan_parse_block(ngx_str_t *value,
     ngx_uint_t *block);
+static ngx_int_t ngx_stream_trojan_parse_server_ref(ngx_conf_t *cf,
+    ngx_str_t *value, ngx_stream_trojan_server_ref_t *ref);
 static ngx_int_t ngx_stream_trojan_sockaddr_to_addr(struct sockaddr *sa,
     socklen_t socklen, ngx_stream_trojan_addr_t *addr);
+static ngx_int_t ngx_stream_trojan_loopback_sockaddr(struct sockaddr *sa);
+static ngx_int_t ngx_stream_trojan_socks5_check_listens(ngx_conf_t *cf,
+    ngx_stream_core_srv_conf_t *cscf);
+static ngx_int_t ngx_stream_trojan_default_server_name(
+    ngx_stream_core_srv_conf_t *cscf);
+static ngx_stream_trojan_srv_conf_t *ngx_stream_trojan_find_trojan_server(
+    ngx_conf_t *cf, ngx_stream_trojan_server_ref_t *ref);
+static ngx_int_t ngx_stream_trojan_postconfiguration(ngx_conf_t *cf);
 static ngx_connection_t *ngx_stream_trojan_create_udp_connection(
     ngx_stream_trojan_ctx_t *ctx, int family, ngx_event_handler_pt handler);
+static ngx_connection_t *ngx_stream_trojan_create_bound_udp_connection(
+    ngx_stream_trojan_ctx_t *ctx, int family,
+    ngx_event_handler_pt handler);
+static ngx_int_t ngx_stream_trojan_socks5_udp_bind_addr(
+    ngx_stream_trojan_ctx_t *ctx, ngx_stream_trojan_addr_t *addr);
 static ngx_int_t ngx_stream_trojan_send_udp_frame(ngx_stream_trojan_ctx_t *ctx,
     ngx_stream_trojan_udp_frame_t *frame);
 static ngx_int_t ngx_stream_trojan_send_udp_resolved(
@@ -262,6 +331,12 @@ static char *ngx_stream_trojan_merge_srv_conf(ngx_conf_t *cf, void *parent,
     void *child);
 static char *ngx_stream_trojan_on(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char *ngx_stream_trojan_socks5_on(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static char *ngx_stream_trojan_socks5_udp_on(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+static char *ngx_stream_trojan_trojan_server(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 static char *ngx_stream_trojan_password(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_stream_trojan_fallback(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -283,6 +358,27 @@ static ngx_command_t ngx_stream_trojan_commands[] = {
       ngx_stream_trojan_on,
       NGX_STREAM_SRV_CONF_OFFSET,
       offsetof(ngx_stream_trojan_srv_conf_t, enable),
+      NULL },
+
+    { ngx_string("socks5"),
+      NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      ngx_stream_trojan_socks5_on,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_trojan_srv_conf_t, socks5_enable),
+      NULL },
+
+    { ngx_string("socks5_udp"),
+      NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      ngx_stream_trojan_socks5_udp_on,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_trojan_srv_conf_t, socks5_udp_enable),
+      NULL },
+
+    { ngx_string("trojan_server"),
+      NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_stream_trojan_trojan_server,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      0,
       NULL },
 
     { ngx_string("trojan_password"),
@@ -354,7 +450,7 @@ static ngx_command_t ngx_stream_trojan_commands[] = {
 
 static ngx_stream_module_t ngx_stream_trojan_module_ctx = {
     NULL,                                  /* preconfiguration */
-    NULL,                                  /* postconfiguration */
+    ngx_stream_trojan_postconfiguration,   /* postconfiguration */
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
     ngx_stream_trojan_create_srv_conf,     /* create server configuration */
@@ -388,7 +484,7 @@ ngx_stream_trojan_handler(ngx_stream_session_t *s)
     c = s->connection;
     tscf = ngx_stream_get_module_srv_conf(s, ngx_stream_trojan_module);
 
-    if (!tscf->enable || tscf->keys == NULL || tscf->keys->nelts == 0) {
+    if (!tscf->enable && !tscf->socks5_enable) {
         ngx_stream_finalize_session(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
         return;
     }
@@ -407,6 +503,13 @@ ngx_stream_trojan_handler(ngx_stream_session_t *s)
 
     c->read->handler = ngx_stream_trojan_read_client;
     c->write->handler = ngx_stream_trojan_read_client;
+
+    if (tscf->socks5_enable && !tscf->enable) {
+        ctx->inbound_socks5 = 1;
+        ctx->state = ngx_stream_trojan_state_socks5_in_greeting;
+        ngx_stream_trojan_process_socks5_in(ctx);
+        return;
+    }
 
     ngx_stream_trojan_process_prefix(ctx);
 }
@@ -435,6 +538,12 @@ ngx_stream_trojan_read_client(ngx_event_t *ev)
     }
 
     switch (ctx->state) {
+    case ngx_stream_trojan_state_socks5_in_greeting:
+    case ngx_stream_trojan_state_socks5_in_request:
+    case ngx_stream_trojan_state_socks5_in_response:
+        ngx_stream_trojan_process_socks5_in(ctx);
+        break;
+
     case ngx_stream_trojan_state_prefix:
         ngx_stream_trojan_process_prefix(ctx);
         break;
@@ -484,6 +593,398 @@ ngx_stream_trojan_key_valid(ngx_stream_trojan_srv_conf_t *tscf, u_char *key)
     }
 
     return NGX_DECLINED;
+}
+
+
+static void
+ngx_stream_trojan_process_socks5_in(ngx_stream_trojan_ctx_t *ctx)
+{
+    int                         rc;
+    size_t                      needed;
+    uint8_t                     method, command;
+    ngx_stream_trojan_srv_conf_t *effective, *socks5_conf;
+
+    if (ctx->socks5_buffer == NULL) {
+        ctx->socks5_buffer = ngx_stream_trojan_create_temp_buf(
+            ctx->session->connection->pool, NGX_STREAM_TROJAN_SOCKS5_BUFFER_SIZE);
+        if (ctx->socks5_buffer == NULL) {
+            ngx_stream_trojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
+            return;
+        }
+    }
+
+    for ( ;; ) {
+        switch (ctx->state) {
+
+        case ngx_stream_trojan_state_socks5_in_greeting:
+            rc = ngx_stream_trojan_socks5_greeting_len(
+                ctx->socks5_buffer->pos,
+                ctx->socks5_buffer->last - ctx->socks5_buffer->pos,
+                &needed);
+
+            if (rc == 1) {
+                rc = ngx_stream_trojan_socks5_in_read(ctx, needed);
+                if (rc == NGX_AGAIN) {
+                    return;
+                }
+
+                if (rc != NGX_OK) {
+                    ngx_stream_trojan_finalize(ctx, NGX_STREAM_BAD_REQUEST);
+                    return;
+                }
+
+                continue;
+            }
+
+            if (rc != 0) {
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_BAD_REQUEST);
+                return;
+            }
+
+            method = ngx_stream_trojan_socks5_select_method(
+                ctx->socks5_buffer->pos,
+                ctx->socks5_buffer->last - ctx->socks5_buffer->pos);
+
+            if (ngx_stream_trojan_socks5_in_prepare_method(ctx)
+                != NGX_OK)
+            {
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
+                return;
+            }
+
+            if (method != NGX_STREAM_TROJAN_SOCKS5_METHOD_NO_AUTH) {
+                ctx->socks5_buffer->start[1] =
+                    NGX_STREAM_TROJAN_SOCKS5_METHOD_NONE;
+                ctx->state = ngx_stream_trojan_state_socks5_in_response;
+                continue;
+            }
+
+            ctx->state = ngx_stream_trojan_state_socks5_in_response;
+            ctx->in_socks5_step = ngx_stream_trojan_in_socks5_step_method_write;
+            continue;
+
+        case ngx_stream_trojan_state_socks5_in_response:
+            rc = ngx_stream_trojan_socks5_in_flush(ctx);
+            if (rc == NGX_AGAIN) {
+                return;
+            }
+
+            if (rc != NGX_OK) {
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_BAD_GATEWAY);
+                return;
+            }
+
+            if (ctx->in_socks5_step
+                == ngx_stream_trojan_in_socks5_step_response_write)
+            {
+                if (ctx->socks5_in_status
+                    != NGX_STREAM_TROJAN_SOCKS5_STATUS_OK)
+                {
+                    ngx_stream_trojan_finalize(ctx, NGX_STREAM_OK);
+                    return;
+                }
+
+                if (ctx->command == NGX_STREAM_TROJAN_CMD_CONNECT) {
+                    ngx_stream_trojan_start_tcp(ctx);
+                    return;
+                }
+
+                if (ngx_stream_trojan_outbound_type(ctx)
+                    == ngx_stream_trojan_outbound_socks5)
+                {
+                    ngx_stream_trojan_start_socks5_udp(ctx);
+                    return;
+                }
+
+                ctx->state = ngx_stream_trojan_state_socks5_in_udp_control;
+                ctx->session->connection->read->handler =
+                    ngx_stream_trojan_socks5_in_udp_control_handler;
+                ctx->session->connection->write->handler =
+                    ngx_stream_trojan_socks5_in_udp_control_handler;
+                ngx_add_timer(ctx->session->connection->read,
+                              ctx->conf->udp_timeout);
+                if (ngx_handle_read_event(ctx->session->connection->read, 0)
+                    != NGX_OK)
+                {
+                    ngx_stream_trojan_finalize(ctx,
+                                               NGX_STREAM_INTERNAL_SERVER_ERROR);
+                    return;
+                }
+
+                return;
+            }
+
+            if (ctx->socks5_buffer->start[1]
+                == NGX_STREAM_TROJAN_SOCKS5_METHOD_NONE)
+            {
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_FORBIDDEN);
+                return;
+            }
+
+            ctx->socks5_buffer->pos = ctx->socks5_buffer->start;
+            ctx->socks5_buffer->last = ctx->socks5_buffer->start;
+            ctx->state = ngx_stream_trojan_state_socks5_in_request;
+            continue;
+
+        case ngx_stream_trojan_state_socks5_in_request:
+            rc = ngx_stream_trojan_socks5_request_len(
+                ctx->socks5_buffer->pos,
+                ctx->socks5_buffer->last - ctx->socks5_buffer->pos,
+                &needed);
+
+            if (rc == 1) {
+                rc = ngx_stream_trojan_socks5_in_read(ctx, needed);
+                if (rc == NGX_AGAIN) {
+                    return;
+                }
+
+                if (rc != NGX_OK) {
+                    ngx_stream_trojan_finalize(ctx, NGX_STREAM_BAD_REQUEST);
+                    return;
+                }
+
+                continue;
+            }
+
+            if (rc != 0
+                || ngx_stream_trojan_socks5_parse_request(
+                       ctx->socks5_buffer->pos,
+                       ctx->socks5_buffer->last - ctx->socks5_buffer->pos,
+                       &command, &ctx->target)
+                   != 0)
+            {
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_BAD_REQUEST);
+                return;
+            }
+
+            socks5_conf = ctx->conf;
+            effective = socks5_conf->effective ? socks5_conf->effective
+                                                : socks5_conf;
+            ctx->conf = effective;
+            ctx->outbound = ngx_stream_trojan_select_outbound(ctx, &ctx->target);
+            ctx->command = command == NGX_STREAM_TROJAN_SOCKS5_CMD_CONNECT
+                           ? NGX_STREAM_TROJAN_CMD_CONNECT
+                           : NGX_STREAM_TROJAN_CMD_ASSOCIATE;
+
+            if (ctx->command == NGX_STREAM_TROJAN_CMD_ASSOCIATE
+                && !socks5_conf->socks5_udp_enable)
+            {
+                if (ngx_stream_trojan_socks5_in_prepare_response(
+                        ctx, 0x07)
+                    != NGX_OK)
+                {
+                    ngx_stream_trojan_finalize(ctx,
+                                               NGX_STREAM_INTERNAL_SERVER_ERROR);
+                    return;
+                }
+
+                ctx->state = ngx_stream_trojan_state_socks5_in_response;
+                ctx->in_socks5_step =
+                    ngx_stream_trojan_in_socks5_step_response_write;
+                continue;
+            }
+
+            if (ngx_stream_trojan_request_blocked(ctx)) {
+                if (ngx_stream_trojan_socks5_in_prepare_response(ctx, 0x02)
+                    != NGX_OK)
+                {
+                    ngx_stream_trojan_finalize(ctx,
+                                               NGX_STREAM_INTERNAL_SERVER_ERROR);
+                    return;
+                }
+
+                ctx->state = ngx_stream_trojan_state_socks5_in_response;
+                ctx->in_socks5_step =
+                    ngx_stream_trojan_in_socks5_step_response_write;
+                continue;
+            }
+
+            if (ctx->command == NGX_STREAM_TROJAN_CMD_ASSOCIATE
+                && ngx_stream_trojan_init_udp_buffers(ctx) != NGX_OK)
+            {
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
+                return;
+            }
+
+            if (ngx_stream_trojan_socks5_in_prepare_response(
+                    ctx, NGX_STREAM_TROJAN_SOCKS5_STATUS_OK)
+                != NGX_OK)
+            {
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
+                return;
+            }
+
+            ctx->state = ngx_stream_trojan_state_socks5_in_response;
+            ctx->in_socks5_step =
+                ngx_stream_trojan_in_socks5_step_response_write;
+            continue;
+
+        default:
+            return;
+        }
+    }
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_socks5_in_flush(ngx_stream_trojan_ctx_t *ctx)
+{
+    ssize_t            n;
+    ngx_connection_t  *c;
+    ngx_buf_t         *b;
+
+    c = ctx->session->connection;
+    b = ctx->socks5_buffer;
+
+    while (b->pos < b->last) {
+        n = c->send(c, b->pos, b->last - b->pos);
+
+        if (n == NGX_AGAIN) {
+            if (ngx_handle_write_event(c->write, 0) != NGX_OK) {
+                return NGX_ERROR;
+            }
+            return NGX_AGAIN;
+        }
+
+        if (n == NGX_ERROR) {
+            return NGX_ERROR;
+        }
+
+        b->pos += n;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_socks5_in_read(ngx_stream_trojan_ctx_t *ctx, size_t needed)
+{
+    size_t             available;
+    ssize_t            n;
+    ngx_connection_t  *c;
+    ngx_buf_t         *b;
+
+    c = ctx->session->connection;
+    b = ctx->socks5_buffer;
+
+    if (needed > (size_t) (b->end - b->start)) {
+        return NGX_ERROR;
+    }
+
+    while ((size_t) (b->last - b->pos) < needed) {
+        available = needed - (size_t) (b->last - b->pos);
+        n = c->recv(c, b->last, available);
+
+        if (n == NGX_AGAIN) {
+            if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+                return NGX_ERROR;
+            }
+            return NGX_AGAIN;
+        }
+
+        if (n == 0 || n == NGX_ERROR) {
+            return NGX_ERROR;
+        }
+
+        b->last += n;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_socks5_in_prepare_method(ngx_stream_trojan_ctx_t *ctx)
+{
+    ngx_buf_t  *b;
+
+    b = ctx->socks5_buffer;
+    b->pos = b->start;
+    b->last = b->start + 2;
+
+    return ngx_stream_trojan_socks5_build_method_response(
+        NGX_STREAM_TROJAN_SOCKS5_METHOD_NO_AUTH, b->pos, 2)
+        == 0 ? NGX_OK : NGX_ERROR;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_socks5_in_prepare_response(ngx_stream_trojan_ctx_t *ctx,
+    uint8_t status)
+{
+    size_t                      written;
+    ngx_buf_t                  *b;
+    ngx_stream_trojan_addr_t    bind_addr;
+    u_char                      zero[4] = { 0, 0, 0, 0 };
+
+    ctx->socks5_in_status = status;
+
+    ngx_memzero(&bind_addr, sizeof(bind_addr));
+    if (status == NGX_STREAM_TROJAN_SOCKS5_STATUS_OK
+        && ctx->command == NGX_STREAM_TROJAN_CMD_ASSOCIATE)
+    {
+        if (ngx_stream_trojan_socks5_udp_bind_addr(ctx, &bind_addr)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+
+    } else {
+        bind_addr.type = NGX_STREAM_TROJAN_ADDR_IPV4;
+        bind_addr.host_len = 4;
+        ngx_memcpy(bind_addr.host, zero, 4);
+        bind_addr.port = 0;
+        bind_addr.wire_len = 1 + 4 + 2;
+    }
+
+    b = ctx->socks5_buffer;
+    b->pos = b->start;
+    b->last = b->start;
+
+    if (ngx_stream_trojan_socks5_build_response(status, &bind_addr,
+                                                b->last, b->end - b->last,
+                                                &written)
+        != 0)
+    {
+        return NGX_ERROR;
+    }
+
+    b->last += written;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_init_udp_buffers(ngx_stream_trojan_ctx_t *ctx)
+{
+    ngx_pool_t  *pool;
+
+    pool = ctx->session->connection->pool;
+
+    if (ctx->udp_in == NULL) {
+        ctx->udp_in = ngx_pnalloc(pool, NGX_STREAM_TROJAN_UDP_BUFFER_SIZE);
+        if (ctx->udp_in == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+    if (ctx->udp_out == NULL) {
+        ctx->udp_out = ngx_pnalloc(pool, NGX_STREAM_TROJAN_UDP_BUFFER_SIZE);
+        if (ctx->udp_out == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+    if (ctx->udp_payload == NULL) {
+        ctx->udp_payload = ngx_pnalloc(pool,
+                                       NGX_STREAM_TROJAN_MAX_UDP_PAYLOAD);
+        if (ctx->udp_payload == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
 }
 
 
@@ -863,17 +1364,7 @@ ngx_stream_trojan_start_tcp(ngx_stream_trojan_ctx_t *ctx)
 static void
 ngx_stream_trojan_start_udp(ngx_stream_trojan_ctx_t *ctx)
 {
-    ngx_pool_t  *pool;
-
-    pool = ctx->session->connection->pool;
-
-    ctx->udp_in = ngx_pnalloc(pool, NGX_STREAM_TROJAN_UDP_BUFFER_SIZE);
-    ctx->udp_out = ngx_pnalloc(pool, NGX_STREAM_TROJAN_UDP_BUFFER_SIZE);
-    ctx->udp_payload = ngx_pnalloc(pool, NGX_STREAM_TROJAN_MAX_UDP_PAYLOAD);
-
-    if (ctx->udp_in == NULL || ctx->udp_out == NULL
-        || ctx->udp_payload == NULL)
-    {
+    if (ngx_stream_trojan_init_udp_buffers(ctx) != NGX_OK) {
         ngx_stream_trojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
         return;
     }
@@ -1030,6 +1521,11 @@ ngx_stream_trojan_resolve_handler(ngx_resolver_ctx_t *rctx)
     }
 
     ngx_resolve_name_done(rctx);
+    if (ctx->inbound_socks5) {
+        ctx->state = ngx_stream_trojan_state_socks5_in_udp_control;
+        return;
+    }
+
     ctx->state = ngx_stream_trojan_state_udp;
     ngx_stream_trojan_process_udp_client(ctx);
 }
@@ -1402,6 +1898,25 @@ ngx_stream_trojan_process_socks5(ngx_stream_trojan_ctx_t *ctx)
                 return;
             }
 
+            if (ctx->inbound_socks5) {
+                ctx->state = ngx_stream_trojan_state_socks5_in_udp_control;
+                ctx->session->connection->read->handler =
+                    ngx_stream_trojan_socks5_in_udp_control_handler;
+                ctx->session->connection->write->handler =
+                    ngx_stream_trojan_socks5_in_udp_control_handler;
+                ngx_add_timer(ctx->session->connection->read,
+                              ctx->conf->udp_timeout);
+                if (ngx_handle_read_event(ctx->session->connection->read, 0)
+                    != NGX_OK)
+                {
+                    ngx_stream_trojan_finalize(ctx,
+                                               NGX_STREAM_INTERNAL_SERVER_ERROR);
+                    return;
+                }
+
+                return;
+            }
+
             ctx->state = ngx_stream_trojan_state_udp;
             ngx_add_timer(ctx->session->connection->read,
                           ctx->conf->udp_timeout);
@@ -1754,6 +2269,72 @@ ngx_stream_trojan_parse_block(ngx_str_t *value, ngx_uint_t *block)
         return NGX_OK;
     }
 
+    return NGX_ERROR;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_parse_server_ref(ngx_conf_t *cf, ngx_str_t *value,
+    ngx_stream_trojan_server_ref_t *ref)
+{
+    u_char     *colon, *last, *p;
+    ngx_int_t   port;
+    ngx_str_t   port_part;
+    ngx_addr_t  addr;
+
+    if (value->len == 0) {
+        goto invalid;
+    }
+
+    last = value->data + value->len;
+    colon = ngx_strlchr(value->data, last, ':');
+    if (colon == NULL || colon == value->data || colon + 1 == last) {
+        goto invalid;
+    }
+
+    for (p = colon + 1; p < last; p++) {
+        if (*p < '0' || *p > '9') {
+            goto invalid;
+        }
+    }
+
+    port_part.data = colon + 1;
+    port_part.len = last - (colon + 1);
+    port = ngx_atoi(port_part.data, port_part.len);
+    if (port <= 0 || port > 65535) {
+        goto invalid;
+    }
+
+    ref->host.data = value->data;
+    ref->host.len = colon - value->data;
+    ngx_strlow(ref->host.data, ref->host.data, ref->host.len);
+    ref->port = (in_port_t) port;
+    ref->set = 1;
+
+    if (ref->host.len == sizeof("localhost") - 1
+        && ngx_strncmp(ref->host.data, "localhost", ref->host.len) == 0)
+    {
+        ref->localhost = 1;
+        return NGX_OK;
+    }
+
+    if (ngx_parse_addr(cf->pool, &addr, ref->host.data, ref->host.len)
+        == NGX_OK)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "trojan_server \"%V\" does not support IP address; "
+                           "use localhost:port or server_name:port",
+                           value);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+
+invalid:
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "invalid trojan_server \"%V\", expected name:port",
+                       value);
     return NGX_ERROR;
 }
 
@@ -2319,6 +2900,155 @@ ngx_stream_trojan_create_udp_connection(ngx_stream_trojan_ctx_t *ctx,
 }
 
 
+static ngx_connection_t *
+ngx_stream_trojan_create_bound_udp_connection(ngx_stream_trojan_ctx_t *ctx,
+    int family, ngx_event_handler_pt handler)
+{
+    ngx_socket_t          fd;
+    ngx_connection_t     *uc;
+    struct sockaddr_in    sin;
+#if (NGX_HAVE_INET6)
+    struct sockaddr_in6   sin6;
+#endif
+    struct sockaddr      *sa;
+    socklen_t             socklen;
+
+    fd = ngx_socket(family, SOCK_DGRAM, 0);
+    if (fd == (ngx_socket_t) -1) {
+        ngx_log_error(NGX_LOG_ERR, ctx->session->connection->log,
+                      ngx_socket_errno, ngx_socket_n " failed");
+        return NULL;
+    }
+
+    if (family == AF_INET) {
+        ngx_memzero(&sin, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sin.sin_port = 0;
+        sa = (struct sockaddr *) &sin;
+        socklen = sizeof(sin);
+
+#if (NGX_HAVE_INET6)
+    } else if (family == AF_INET6) {
+        ngx_memzero(&sin6, sizeof(sin6));
+        sin6.sin6_family = AF_INET6;
+        sin6.sin6_addr = in6addr_loopback;
+        sin6.sin6_port = 0;
+        sa = (struct sockaddr *) &sin6;
+        socklen = sizeof(sin6);
+#endif
+
+    } else {
+        ngx_close_socket(fd);
+        return NULL;
+    }
+
+    if (bind(fd, sa, socklen) == -1) {
+        ngx_log_error(NGX_LOG_ERR, ctx->session->connection->log,
+                      ngx_socket_errno, "bind() socks5 udp relay failed");
+        ngx_close_socket(fd);
+        return NULL;
+    }
+
+    if (ngx_nonblocking(fd) == -1) {
+        ngx_log_error(NGX_LOG_ERR, ctx->session->connection->log,
+                      ngx_socket_errno, ngx_nonblocking_n " failed");
+        ngx_close_socket(fd);
+        return NULL;
+    }
+
+    uc = ngx_get_connection(fd, ctx->session->connection->log);
+    if (uc == NULL) {
+        ngx_close_socket(fd);
+        return NULL;
+    }
+
+    uc->data = ctx;
+    uc->log = ctx->session->connection->log;
+    uc->read->handler = handler;
+    uc->write->handler = handler;
+
+    if (ngx_add_event(uc->read, NGX_READ_EVENT, 0) != NGX_OK) {
+        ngx_close_connection(uc);
+        return NULL;
+    }
+
+    return uc;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_socks5_udp_bind_addr(ngx_stream_trojan_ctx_t *ctx,
+    ngx_stream_trojan_addr_t *addr)
+{
+    ngx_connection_t      *c, *relay;
+    struct sockaddr_in    *sin;
+#if (NGX_HAVE_INET6)
+    struct sockaddr_in6   *sin6;
+#endif
+    struct sockaddr_storage ss;
+    socklen_t             socklen;
+
+    c = ctx->session->connection;
+
+    if (ngx_connection_local_sockaddr(c, NULL, 0) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (c->local_sockaddr->sa_family == AF_INET) {
+        if (ctx->socks5_in_udp == NULL) {
+            ctx->socks5_in_udp = ngx_stream_trojan_create_bound_udp_connection(
+                ctx, AF_INET, ngx_stream_trojan_socks5_in_udp_read_handler);
+        }
+        relay = ctx->socks5_in_udp;
+        if (relay == NULL) {
+            return NGX_ERROR;
+        }
+
+        socklen = sizeof(ss);
+        if (getsockname(relay->fd, (struct sockaddr *) &ss, &socklen) == -1) {
+            return NGX_ERROR;
+        }
+
+        sin = (struct sockaddr_in *) &ss;
+        addr->type = NGX_STREAM_TROJAN_ADDR_IPV4;
+        addr->host_len = 4;
+        addr->port = ntohs(sin->sin_port);
+        ngx_memcpy(addr->host, &sin->sin_addr, 4);
+        addr->wire_len = 1 + 4 + 2;
+        return NGX_OK;
+    }
+
+#if (NGX_HAVE_INET6)
+    if (c->local_sockaddr->sa_family == AF_INET6) {
+        if (ctx->socks5_in_udp == NULL) {
+            ctx->socks5_in_udp = ngx_stream_trojan_create_bound_udp_connection(
+                ctx, AF_INET6, ngx_stream_trojan_socks5_in_udp_read_handler);
+        }
+        relay = ctx->socks5_in_udp;
+        if (relay == NULL) {
+            return NGX_ERROR;
+        }
+
+        socklen = sizeof(ss);
+        if (getsockname(relay->fd, (struct sockaddr *) &ss, &socklen) == -1) {
+            return NGX_ERROR;
+        }
+
+        sin6 = (struct sockaddr_in6 *) &ss;
+        addr->type = NGX_STREAM_TROJAN_ADDR_IPV6;
+        addr->host_len = 16;
+        addr->port = ntohs(sin6->sin6_port);
+        ngx_memcpy(addr->host, &sin6->sin6_addr, 16);
+        addr->wire_len = 1 + 16 + 2;
+        return NGX_OK;
+    }
+#endif
+
+    return NGX_ERROR;
+}
+
+
 static void
 ngx_stream_trojan_process_udp_client(ngx_stream_trojan_ctx_t *ctx)
 {
@@ -2538,13 +3268,6 @@ ngx_stream_trojan_send_socks5_udp_frame(ngx_stream_trojan_ctx_t *ctx,
     ngx_stream_trojan_udp_frame_t *frame)
 {
     size_t            written;
-    ssize_t           n;
-    ngx_connection_t  *uc;
-
-    uc = ctx->socks5_udp;
-    if (uc == NULL || ctx->socks5_udp_relay.sockaddr == NULL) {
-        return NGX_ERROR;
-    }
 
     if (ngx_stream_trojan_socks5_build_udp_packet(
             &frame->addr, frame->payload, frame->payload_len,
@@ -2556,7 +3279,24 @@ ngx_stream_trojan_send_socks5_udp_frame(ngx_stream_trojan_ctx_t *ctx,
         return NGX_ERROR;
     }
 
-    n = sendto(uc->fd, ctx->udp_out, written, 0,
+    return ngx_stream_trojan_forward_socks5_udp_packet(ctx, ctx->udp_out,
+                                                       written);
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_forward_socks5_udp_packet(ngx_stream_trojan_ctx_t *ctx,
+    u_char *packet, size_t packet_len)
+{
+    ssize_t           n;
+    ngx_connection_t *uc;
+
+    uc = ctx->socks5_udp;
+    if (uc == NULL || ctx->socks5_udp_relay.sockaddr == NULL) {
+        return NGX_ERROR;
+    }
+
+    n = sendto(uc->fd, packet, packet_len, 0,
                ctx->socks5_udp_relay.sockaddr,
                ctx->socks5_udp_relay.socklen);
 
@@ -2749,6 +3489,278 @@ ngx_stream_trojan_sockaddr_to_addr(struct sockaddr *sa, socklen_t socklen,
 }
 
 
+static ngx_int_t
+ngx_stream_trojan_loopback_sockaddr(struct sockaddr *sa)
+{
+    struct sockaddr_in   *sin;
+#if (NGX_HAVE_INET6)
+    struct sockaddr_in6  *sin6;
+#endif
+
+    if (sa->sa_family == AF_INET) {
+        sin = (struct sockaddr_in *) sa;
+        return sin->sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+    }
+
+#if (NGX_HAVE_INET6)
+    if (sa->sa_family == AF_INET6) {
+        sin6 = (struct sockaddr_in6 *) sa;
+        return IN6_IS_ADDR_LOOPBACK(&sin6->sin6_addr);
+    }
+#endif
+
+    return 0;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_socks5_check_listens(ngx_conf_t *cf,
+    ngx_stream_core_srv_conf_t *cscf)
+{
+    ngx_uint_t                    p, a, s, found;
+    ngx_stream_conf_port_t       *port;
+    ngx_stream_conf_addr_t       *addr;
+    ngx_stream_core_srv_conf_t  **servers;
+    ngx_stream_core_main_conf_t  *cmcf;
+
+    cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
+    if (cmcf->ports == NULL) {
+        return NGX_ERROR;
+    }
+
+    found = 0;
+    port = cmcf->ports->elts;
+
+    for (p = 0; p < cmcf->ports->nelts; p++) {
+        addr = port[p].addrs.elts;
+
+        for (a = 0; a < port[p].addrs.nelts; a++) {
+            servers = addr[a].servers.elts;
+
+            for (s = 0; s < addr[a].servers.nelts; s++) {
+                if (servers[s] != cscf) {
+                    continue;
+                }
+
+                found = 1;
+
+                if (port[p].type != SOCK_STREAM) {
+                    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                       "socks5 inbound requires TCP listen");
+                    return NGX_ERROR;
+                }
+
+#if (NGX_STREAM_SSL)
+                if (addr[a].opt.ssl) {
+                    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                       "socks5 inbound does not allow "
+                                       "listen ssl");
+                    return NGX_ERROR;
+                }
+#endif
+
+                if (!ngx_stream_trojan_loopback_sockaddr(
+                        addr[a].opt.sockaddr))
+                {
+                    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                       "socks5 inbound only allows listen "
+                                       "127.0.0.1 or [::1]");
+                    return NGX_ERROR;
+                }
+            }
+        }
+    }
+
+    return found ? NGX_OK : NGX_ERROR;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_default_server_name(ngx_stream_core_srv_conf_t *cscf)
+{
+    ngx_stream_server_name_t  *name;
+
+    if (cscf->server_names.nelts == 0) {
+        return 1;
+    }
+
+    if (cscf->server_names.nelts != 1) {
+        return 0;
+    }
+
+    name = cscf->server_names.elts;
+    return name[0].name.len == 0;
+}
+
+
+static ngx_stream_trojan_srv_conf_t *
+ngx_stream_trojan_find_trojan_server(ngx_conf_t *cf,
+    ngx_stream_trojan_server_ref_t *ref)
+{
+    ngx_uint_t                    p, a, s, n, matches;
+    ngx_stream_conf_port_t       *port;
+    ngx_stream_conf_addr_t       *addr;
+    ngx_stream_core_srv_conf_t  **servers, *cscf;
+    ngx_stream_core_main_conf_t  *cmcf;
+    ngx_stream_server_name_t     *name;
+    ngx_stream_trojan_srv_conf_t *tscf, *matched;
+
+    cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
+    if (cmcf->ports == NULL) {
+        return NULL;
+    }
+
+    matches = 0;
+    matched = NULL;
+    port = cmcf->ports->elts;
+
+    for (p = 0; p < cmcf->ports->nelts; p++) {
+        if (port[p].port != ref->port || port[p].type != SOCK_STREAM) {
+            continue;
+        }
+
+        addr = port[p].addrs.elts;
+        for (a = 0; a < port[p].addrs.nelts; a++) {
+            servers = addr[a].servers.elts;
+
+            for (s = 0; s < addr[a].servers.nelts; s++) {
+                cscf = servers[s];
+                tscf = cscf->ctx->srv_conf[ngx_stream_trojan_module.ctx_index];
+                if (tscf == NULL || !tscf->enable) {
+                    continue;
+                }
+
+                if (ref->localhost) {
+                    if (ngx_stream_trojan_default_server_name(cscf)) {
+                        matches++;
+                        matched = tscf;
+                    }
+
+                    continue;
+                }
+
+                name = cscf->server_names.elts;
+                for (n = 0; n < cscf->server_names.nelts; n++) {
+                    if (name[n].name.len == ref->host.len
+                        && ngx_strncmp(name[n].name.data, ref->host.data,
+                                       ref->host.len)
+                           == 0)
+                    {
+                        matches++;
+                        matched = tscf;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (matches == 1) {
+        return matched;
+    }
+
+    if (matches > 1) {
+        if (ref->localhost) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "trojan_server localhost:%ui matches multiple "
+                               "trojan servers without server_name",
+                               (ngx_uint_t) ref->port);
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "trojan_server \"%V:%ui\" matches multiple "
+                               "trojan servers", &ref->host,
+                               (ngx_uint_t) ref->port);
+        }
+    } else {
+        if (ref->localhost) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "trojan_server localhost:%ui not found",
+                               (ngx_uint_t) ref->port);
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "trojan_server \"%V:%ui\" not found",
+                               &ref->host, (ngx_uint_t) ref->port);
+        }
+    }
+
+    return NULL;
+}
+
+
+static ngx_int_t
+ngx_stream_trojan_postconfiguration(ngx_conf_t *cf)
+{
+    ngx_uint_t                    s, trojan_count;
+    ngx_stream_core_srv_conf_t  **servers, *cscf;
+    ngx_stream_core_main_conf_t  *cmcf;
+    ngx_stream_trojan_srv_conf_t *tscf, *default_trojan, *target;
+
+    cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
+    if (cmcf == NULL || cmcf->servers.nelts == 0) {
+        return NGX_OK;
+    }
+
+    trojan_count = 0;
+    default_trojan = NULL;
+    servers = cmcf->servers.elts;
+
+    for (s = 0; s < cmcf->servers.nelts; s++) {
+        tscf = servers[s]->ctx->srv_conf[ngx_stream_trojan_module.ctx_index];
+        if (tscf != NULL && tscf->enable) {
+            trojan_count++;
+            default_trojan = tscf;
+        }
+    }
+
+    for (s = 0; s < cmcf->servers.nelts; s++) {
+        cscf = servers[s];
+        tscf = cscf->ctx->srv_conf[ngx_stream_trojan_module.ctx_index];
+
+        if (tscf == NULL || !tscf->socks5_enable) {
+            continue;
+        }
+
+        if (ngx_stream_trojan_socks5_check_listens(cf, cscf) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+        if (tscf->enable) {
+            tscf->effective = tscf;
+            continue;
+        }
+
+        if (tscf->socks5_ref_set) {
+            target = ngx_stream_trojan_find_trojan_server(cf,
+                                                          &tscf->socks5_ref);
+            if (target == NULL) {
+                return NGX_ERROR;
+            }
+
+            tscf->effective = target;
+            continue;
+        }
+
+        if (trojan_count == 1) {
+            tscf->effective = default_trojan;
+            continue;
+        }
+
+        if (trojan_count == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "socks5 requires a trojan server");
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "socks5 requires trojan_server when multiple "
+                               "trojan servers are configured");
+        }
+
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
 static void
 ngx_stream_trojan_udp_read_handler(ngx_event_t *ev)
 {
@@ -2806,6 +3818,36 @@ ngx_stream_trojan_udp_read_handler(ngx_event_t *ev)
                                              &written)
             != 0)
         {
+            continue;
+        }
+
+        if (ctx->inbound_socks5) {
+            if (!ctx->socks5_udp_client_set) {
+                continue;
+            }
+
+            if (ctx->socks5_in_udp == NULL) {
+                continue;
+            }
+
+            if (ngx_stream_trojan_socks5_build_udp_packet(
+                    &addr, ctx->udp_payload, (uint16_t) n, ctx->udp_out,
+                    NGX_STREAM_TROJAN_SOCKS5_MAX_PACKET, &written)
+                != 0)
+            {
+                continue;
+            }
+
+            n = sendto(ctx->socks5_in_udp->fd, ctx->udp_out, written, 0,
+                       (struct sockaddr *) &ctx->socks5_udp_client,
+                       ctx->socks5_udp_client_socklen);
+            if (n == -1 && ngx_socket_errno != NGX_EAGAIN) {
+                ngx_log_error(NGX_LOG_ERR, c->log, ngx_socket_errno,
+                              "sendto() socks5 udp client failed");
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_BAD_GATEWAY);
+                return;
+            }
+
             continue;
         }
 
@@ -2877,6 +3919,24 @@ ngx_stream_trojan_socks5_udp_read_handler(ngx_event_t *ev)
             continue;
         }
 
+        if (ctx->inbound_socks5) {
+            if (!ctx->socks5_udp_client_set || ctx->socks5_in_udp == NULL) {
+                continue;
+            }
+
+            n = sendto(ctx->socks5_in_udp->fd, ctx->udp_out, (size_t) n, 0,
+                       (struct sockaddr *) &ctx->socks5_udp_client,
+                       ctx->socks5_udp_client_socklen);
+            if (n == -1 && ngx_socket_errno != NGX_EAGAIN) {
+                ngx_log_error(NGX_LOG_ERR, c->log, ngx_socket_errno,
+                              "sendto() socks5 udp client failed");
+                ngx_stream_trojan_finalize(ctx, NGX_STREAM_BAD_GATEWAY);
+                return;
+            }
+
+            continue;
+        }
+
         ngx_memcpy(ctx->udp_payload, frame.payload, frame.payload_len);
         if (ngx_stream_trojan_pack_udp_frame(
                 &frame.addr, ctx->udp_payload, frame.payload_len,
@@ -2905,6 +3965,89 @@ ngx_stream_trojan_socks5_udp_read_handler(ngx_event_t *ev)
 
     if (ngx_handle_read_event(uc->read, 0) != NGX_OK) {
         ngx_stream_trojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
+    }
+}
+
+
+static void
+ngx_stream_trojan_socks5_in_udp_read_handler(ngx_event_t *ev)
+{
+    ssize_t                         n;
+    ngx_connection_t               *uc;
+    ngx_stream_trojan_ctx_t        *ctx;
+    ngx_stream_trojan_udp_frame_t   frame;
+    ngx_stream_trojan_addr_t        original;
+    struct sockaddr_storage         ss;
+    socklen_t                       socklen;
+
+    uc = ev->data;
+    ctx = uc->data;
+
+    if (ctx == NULL) {
+        ngx_close_connection(uc);
+        return;
+    }
+
+    for ( ;; ) {
+        socklen = sizeof(ss);
+        n = recvfrom(uc->fd, ctx->udp_out,
+                     NGX_STREAM_TROJAN_SOCKS5_MAX_PACKET, 0,
+                     (struct sockaddr *) &ss, &socklen);
+
+        if (n == -1) {
+            ngx_err_t err = ngx_socket_errno;
+            if (err == NGX_EAGAIN) {
+                break;
+            }
+
+            ngx_log_error(NGX_LOG_ERR, uc->log, err,
+                          "recvfrom() socks5 udp relay failed");
+            break;
+        }
+
+        if (ngx_stream_trojan_socks5_parse_udp_packet(ctx->udp_out,
+                                                      (size_t) n, &frame)
+            != 0)
+        {
+            continue;
+        }
+
+        if (ctx->resolver_ctx != NULL) {
+            continue;
+        }
+
+        if (!ctx->socks5_udp_client_set) {
+            ngx_memcpy(&ctx->socks5_udp_client, &ss, socklen);
+            ctx->socks5_udp_client_socklen = socklen;
+            ctx->socks5_udp_client_set = 1;
+        } else if (ctx->socks5_udp_client_socklen != socklen
+                   || ngx_memcmp(&ctx->socks5_udp_client, &ss, socklen) != 0)
+        {
+            continue;
+        }
+
+        original = ctx->target;
+        ctx->target = frame.addr;
+        if (ngx_stream_trojan_request_blocked(ctx)) {
+            ctx->target = original;
+            continue;
+        }
+        ctx->target = original;
+
+        if (ngx_stream_trojan_outbound_type(ctx)
+            == ngx_stream_trojan_outbound_socks5)
+        {
+            (void) ngx_stream_trojan_forward_socks5_udp_packet(
+                ctx, ctx->udp_out, (size_t) n);
+            continue;
+        }
+
+        (void) ngx_stream_trojan_send_udp_frame(ctx, &frame);
+    }
+
+    if (ngx_handle_read_event(uc->read, 0) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, uc->log, 0,
+                      "ngx_handle_read_event() socks5 udp relay failed");
     }
 }
 
@@ -2962,6 +4105,60 @@ ngx_stream_trojan_socks5_udp_control_handler(ngx_event_t *ev)
 
 
 static void
+ngx_stream_trojan_socks5_in_udp_control_handler(ngx_event_t *ev)
+{
+    u_char                    buf[128];
+    ssize_t                   n;
+    ngx_connection_t         *c;
+    ngx_stream_session_t     *s;
+    ngx_stream_trojan_ctx_t  *ctx;
+
+    c = ev->data;
+    s = c->data;
+    ctx = ngx_stream_get_module_ctx(s, ngx_stream_trojan_module);
+
+    if (ctx == NULL) {
+        ngx_stream_finalize_session(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
+        return;
+    }
+
+    if (ev->timedout) {
+        ngx_connection_error(c, NGX_ETIMEDOUT,
+                             "socks5 udp control timed out");
+        ngx_stream_trojan_finalize(ctx, NGX_STREAM_OK);
+        return;
+    }
+
+    if (c->read->eof || c->read->error || c->write->error) {
+        ngx_stream_trojan_finalize(ctx, NGX_STREAM_OK);
+        return;
+    }
+
+    for ( ;; ) {
+        n = c->recv(c, buf, sizeof(buf));
+
+        if (n == NGX_AGAIN) {
+            break;
+        }
+
+        if (n == 0) {
+            ngx_stream_trojan_finalize(ctx, NGX_STREAM_OK);
+            return;
+        }
+
+        if (n == NGX_ERROR) {
+            ngx_stream_trojan_finalize(ctx, NGX_STREAM_OK);
+            return;
+        }
+    }
+
+    if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+        ngx_stream_trojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
+    }
+}
+
+
+static void
 ngx_stream_trojan_finalize(ngx_stream_trojan_ctx_t *ctx, ngx_uint_t rc)
 {
     if (ctx->resolver_ctx) {
@@ -2982,6 +4179,11 @@ ngx_stream_trojan_finalize(ngx_stream_trojan_ctx_t *ctx, ngx_uint_t rc)
     if (ctx->socks5_udp) {
         ngx_close_connection(ctx->socks5_udp);
         ctx->socks5_udp = NULL;
+    }
+
+    if (ctx->socks5_in_udp) {
+        ngx_close_connection(ctx->socks5_in_udp);
+        ctx->socks5_in_udp = NULL;
     }
 
 #if (NGX_HAVE_INET6)
@@ -3006,6 +4208,8 @@ ngx_stream_trojan_create_srv_conf(ngx_conf_t *cf)
     }
 
     conf->enable = NGX_CONF_UNSET;
+    conf->socks5_enable = NGX_CONF_UNSET;
+    conf->socks5_udp_enable = NGX_CONF_UNSET;
     conf->connect_timeout = NGX_CONF_UNSET_MSEC;
     conf->timeout = NGX_CONF_UNSET_MSEC;
     conf->udp_timeout = NGX_CONF_UNSET_MSEC;
@@ -3022,6 +4226,8 @@ ngx_stream_trojan_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_stream_trojan_srv_conf_t *conf = child;
 
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
+    ngx_conf_merge_value(conf->socks5_enable, prev->socks5_enable, 0);
+    ngx_conf_merge_value(conf->socks5_udp_enable, prev->socks5_udp_enable, 0);
     ngx_conf_merge_msec_value(conf->connect_timeout, prev->connect_timeout, 60000);
     ngx_conf_merge_msec_value(conf->timeout, prev->timeout, 600000);
     ngx_conf_merge_msec_value(conf->udp_timeout, prev->udp_timeout, 600000);
@@ -3040,9 +4246,17 @@ ngx_stream_trojan_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->outbounds = prev->outbounds;
     }
 
+    conf->effective = conf;
+
     if (conf->enable && (conf->keys == NULL || conf->keys->nelts == 0)) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "trojan is on but no trojan_password is configured");
+        return NGX_CONF_ERROR;
+    }
+
+    if (conf->socks5_udp_enable && !conf->socks5_enable) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "socks5_udp requires socks5 on");
         return NGX_CONF_ERROR;
     }
 
@@ -3064,6 +4278,58 @@ ngx_stream_trojan_on(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     cscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_core_module);
     cscf->handler = ngx_stream_trojan_handler;
 
+    return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_stream_trojan_socks5_on(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    char                        *rv;
+    ngx_stream_core_srv_conf_t  *cscf;
+
+    rv = ngx_conf_set_flag_slot(cf, cmd, conf);
+    if (rv != NGX_CONF_OK) {
+        return rv;
+    }
+
+    cscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_core_module);
+    cscf->handler = ngx_stream_trojan_handler;
+
+    return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_stream_trojan_socks5_udp_on(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    return ngx_conf_set_flag_slot(cf, cmd, conf);
+}
+
+
+static char *
+ngx_stream_trojan_trojan_server(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_stream_trojan_srv_conf_t *tscf = conf;
+    ngx_str_t                   *value;
+
+    if (tscf->socks5_ref_set) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    if (ngx_stream_trojan_parse_server_ref(cf, &value[1], &tscf->socks5_ref)
+        != NGX_OK)
+    {
+        return NGX_CONF_ERROR;
+    }
+
+    tscf->socks5_ref_set = 1;
+
+    (void) cmd;
     return NGX_CONF_OK;
 }
 
