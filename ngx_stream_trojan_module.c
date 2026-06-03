@@ -3559,6 +3559,14 @@ ngx_stream_trojan_socks5_check_listens(ngx_conf_t *cf,
 
                 found = 1;
 
+                if (addr[a].servers.nelts != 1) {
+                    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                       "socks5 inbound listen %V conflicts "
+                                       "with another stream server",
+                                       &addr[a].opt.addr_text);
+                    return NGX_ERROR;
+                }
+
                 if (port[p].type != SOCK_STREAM) {
                     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                        "socks5 inbound requires TCP listen");
