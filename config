@@ -5,7 +5,8 @@ if test -n "$ngx_module_link"; then
     ngx_module_name=ngx_stream_trojan_module
     ngx_module_srcs="$ngx_addon_dir/ngx_stream_trojan_module.c \
                      $ngx_addon_dir/ngx_stream_trojan_protocol.c \
-                     $ngx_addon_dir/ngx_stream_trojan_socks5_protocol.c"
+                     $ngx_addon_dir/ngx_stream_trojan_socks5_protocol.c \
+                     $ngx_addon_dir/ngx_stream_trojan_http_proxy_protocol.c"
 
     . auto/module
 else
@@ -13,5 +14,6 @@ else
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
                     $ngx_addon_dir/ngx_stream_trojan_module.c \
                     $ngx_addon_dir/ngx_stream_trojan_protocol.c \
-                    $ngx_addon_dir/ngx_stream_trojan_socks5_protocol.c"
+                    $ngx_addon_dir/ngx_stream_trojan_socks5_protocol.c \
+                    $ngx_addon_dir/ngx_stream_trojan_http_proxy_protocol.c"
 fi
