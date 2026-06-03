@@ -303,7 +303,7 @@ static ngx_int_t ngx_stream_trojan_socks5_check_listens(ngx_conf_t *cf,
 static ngx_int_t ngx_stream_trojan_default_server_name(
     ngx_stream_core_srv_conf_t *cscf);
 static ngx_stream_trojan_srv_conf_t *ngx_stream_trojan_find_trojan_server(
-    ngx_conf_t *cf, ngx_stream_trojan_server_ref_t *ref);
+    ngx_conf_t *cf, ngx_stream_trojan_server_ref_t *ref, ngx_uint_t log_level);
 static ngx_int_t ngx_stream_trojan_postconfiguration(ngx_conf_t *cf);
 static ngx_connection_t *ngx_stream_trojan_create_udp_connection(
     ngx_stream_trojan_ctx_t *ctx, int family, ngx_event_handler_pt handler);
@@ -758,8 +758,23 @@ ngx_stream_trojan_process_socks5_in(ngx_stream_trojan_ctx_t *ctx)
             }
 
             socks5_conf = ctx->conf;
-            effective = socks5_conf->effective ? socks5_conf->effective
-                                                : socks5_conf;
+            effective = socks5_conf->effective;
+            if (effective == NULL) {
+                if (ngx_stream_trojan_socks5_in_prepare_response(
+                        ctx, NGX_STREAM_TROJAN_SOCKS5_STATUS_GENERAL_FAILURE)
+                    != NGX_OK)
+                {
+                    ngx_stream_trojan_finalize(ctx,
+                                               NGX_STREAM_INTERNAL_SERVER_ERROR);
+                    return;
+                }
+
+                ctx->state = ngx_stream_trojan_state_socks5_in_response;
+                ctx->in_socks5_step =
+                    ngx_stream_trojan_in_socks5_step_response_write;
+                continue;
+            }
+
             ctx->conf = effective;
             ctx->outbound = ngx_stream_trojan_select_outbound(ctx, &ctx->target);
             ctx->command = command == NGX_STREAM_TROJAN_SOCKS5_CMD_CONNECT
@@ -3595,7 +3610,7 @@ ngx_stream_trojan_default_server_name(ngx_stream_core_srv_conf_t *cscf)
 
 static ngx_stream_trojan_srv_conf_t *
 ngx_stream_trojan_find_trojan_server(ngx_conf_t *cf,
-    ngx_stream_trojan_server_ref_t *ref)
+    ngx_stream_trojan_server_ref_t *ref, ngx_uint_t log_level)
 {
     ngx_uint_t                    p, a, s, n, matches;
     ngx_stream_conf_port_t       *port;
@@ -3661,23 +3676,23 @@ ngx_stream_trojan_find_trojan_server(ngx_conf_t *cf,
 
     if (matches > 1) {
         if (ref->localhost) {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            ngx_conf_log_error(log_level, cf, 0,
                                "trojan_server localhost:%ui matches multiple "
                                "trojan servers without server_name",
                                (ngx_uint_t) ref->port);
         } else {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            ngx_conf_log_error(log_level, cf, 0,
                                "trojan_server \"%V:%ui\" matches multiple "
                                "trojan servers", &ref->host,
                                (ngx_uint_t) ref->port);
         }
     } else {
         if (ref->localhost) {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            ngx_conf_log_error(log_level, cf, 0,
                                "trojan_server localhost:%ui not found",
                                (ngx_uint_t) ref->port);
         } else {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            ngx_conf_log_error(log_level, cf, 0,
                                "trojan_server \"%V:%ui\" not found",
                                &ref->host, (ngx_uint_t) ref->port);
         }
@@ -3731,11 +3746,8 @@ ngx_stream_trojan_postconfiguration(ngx_conf_t *cf)
 
         if (tscf->socks5_ref_set) {
             target = ngx_stream_trojan_find_trojan_server(cf,
-                                                          &tscf->socks5_ref);
-            if (target == NULL) {
-                return NGX_ERROR;
-            }
-
+                                                          &tscf->socks5_ref,
+                                                          NGX_LOG_WARN);
             tscf->effective = target;
             continue;
         }
@@ -4246,7 +4258,7 @@ ngx_stream_trojan_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->outbounds = prev->outbounds;
     }
 
-    conf->effective = conf;
+    conf->effective = conf->enable ? conf : NULL;
 
     if (conf->enable && (conf->keys == NULL || conf->keys->nelts == 0)) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
