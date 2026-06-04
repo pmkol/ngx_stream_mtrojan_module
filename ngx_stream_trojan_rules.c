@@ -79,6 +79,8 @@ static ngx_uint_t ngx_stream_trojan_route_rules_ipv4_find(
 static ngx_uint_t ngx_stream_trojan_route_rules_ipv6_find(
     ngx_stream_trojan_ipv6_prefix_bucket_t *bucket, u_char *addr);
 #endif
+static ngx_int_t ngx_stream_trojan_route_rules_target_to_sockaddr(
+    ngx_stream_trojan_addr_t *target, ngx_sockaddr_t *sockaddr);
 
 
 void *
@@ -450,6 +452,39 @@ ngx_stream_trojan_rules_match_ip(ngx_stream_trojan_rules_conf_t *rules,
 {
     return ngx_stream_trojan_route_rules_match_ip(
         ngx_stream_trojan_rules_find(rules, tag), sa);
+}
+
+
+ngx_stream_trojan_rule_match_e
+ngx_stream_trojan_route_rules_match_target(
+    ngx_stream_trojan_route_rules_t *group, ngx_stream_trojan_addr_t *target)
+{
+    ngx_str_t                       host;
+    ngx_sockaddr_t                  sockaddr;
+
+    if (target == NULL) {
+        return NGX_STREAM_TROJAN_RULE_NOT_APPLICABLE;
+    }
+
+    if (target->type == NGX_STREAM_TROJAN_ADDR_DOMAIN) {
+        host.data = target->host;
+        host.len = target->host_len;
+
+        if (group == NULL || group->domains.nelts == 0) {
+            return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+        }
+
+        return ngx_stream_trojan_route_rules_match_domain(group, &host);
+    }
+
+    if (ngx_stream_trojan_route_rules_target_to_sockaddr(target, &sockaddr)
+        == NGX_OK)
+    {
+        return ngx_stream_trojan_route_rules_match_ip(group,
+                                                      &sockaddr.sockaddr);
+    }
+
+    return NGX_STREAM_TROJAN_RULE_NOT_APPLICABLE;
 }
 
 
@@ -1541,3 +1576,75 @@ ngx_stream_trojan_route_rules_ipv6_find(
     return 0;
 }
 #endif
+
+
+static ngx_int_t
+ngx_stream_trojan_route_rules_target_to_sockaddr(
+    ngx_stream_trojan_addr_t *target, ngx_sockaddr_t *sockaddr)
+{
+    in_addr_t             addr;
+    struct sockaddr_in   *sin;
+#if (NGX_HAVE_INET6)
+    struct sockaddr_in6  *sin6;
+#endif
+
+    if (target == NULL || sockaddr == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(sockaddr, sizeof(ngx_sockaddr_t));
+
+    switch (target->type) {
+
+    case NGX_STREAM_TROJAN_ADDR_IPV4:
+        if (target->host_len != 4) {
+            return NGX_ERROR;
+        }
+
+        sin = &sockaddr->sockaddr_in;
+        sin->sin_family = AF_INET;
+        sin->sin_port = htons(target->port);
+        ngx_memcpy(&sin->sin_addr, target->host, 4);
+        return NGX_OK;
+
+    case NGX_STREAM_TROJAN_ADDR_DOMAIN:
+        addr = ngx_inet_addr(target->host, target->host_len);
+        if (addr != INADDR_NONE) {
+            sin = &sockaddr->sockaddr_in;
+            sin->sin_family = AF_INET;
+            sin->sin_port = htons(target->port);
+            sin->sin_addr.s_addr = addr;
+            return NGX_OK;
+        }
+
+#if (NGX_HAVE_INET6)
+        sin6 = &sockaddr->sockaddr_in6;
+        if (ngx_inet6_addr(target->host, target->host_len,
+                           sin6->sin6_addr.s6_addr)
+            == NGX_OK)
+        {
+            sin6->sin6_family = AF_INET6;
+            sin6->sin6_port = htons(target->port);
+            return NGX_OK;
+        }
+#endif
+
+        return NGX_DECLINED;
+
+#if (NGX_HAVE_INET6)
+    case NGX_STREAM_TROJAN_ADDR_IPV6:
+        if (target->host_len != 16) {
+            return NGX_ERROR;
+        }
+
+        sin6 = &sockaddr->sockaddr_in6;
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_port = htons(target->port);
+        ngx_memcpy(&sin6->sin6_addr, target->host, 16);
+        return NGX_OK;
+#endif
+
+    default:
+        return NGX_ERROR;
+    }
+}

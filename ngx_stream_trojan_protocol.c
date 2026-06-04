@@ -1,5 +1,6 @@
 #include "ngx_stream_trojan_protocol.h"
 
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -310,6 +311,69 @@ ngx_stream_trojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_trojan_a
         return -1;
     }
 }
+
+
+static int
+ngx_stream_trojan_tail_has_colon(const uint8_t *data, size_t len)
+{
+    size_t i, start;
+
+    start = len > 5 ? len - 5 : 0;
+
+    for (i = start; i < len; i++) {
+        if (data[i] == ':') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+
+int
+ngx_stream_trojan_normalize_ip_literal(ngx_stream_trojan_addr_t *addr)
+{
+    uint8_t last;
+    struct in_addr in;
+    struct in6_addr in6;
+    char text[INET6_ADDRSTRLEN];
+
+    if (addr == NULL || addr->type != NGX_STREAM_TROJAN_ADDR_DOMAIN
+        || addr->host_len == 0 || addr->host_len >= sizeof(text))
+    {
+        return 0;
+    }
+
+    last = addr->host[addr->host_len - 1];
+
+    if ((last < '0' || last > '9')
+        && !ngx_stream_trojan_tail_has_colon(addr->host, addr->host_len))
+    {
+        return 0;
+    }
+
+    memcpy(text, addr->host, addr->host_len);
+    text[addr->host_len] = '\0';
+
+    if (inet_pton(AF_INET, text, &in) == 1) {
+        addr->type = NGX_STREAM_TROJAN_ADDR_IPV4;
+        memcpy(addr->host, &in, sizeof(in));
+        addr->host_len = sizeof(in);
+        addr->wire_len = 1 + addr->host_len + 2;
+        return 1;
+    }
+
+    if (inet_pton(AF_INET6, text, &in6) == 1) {
+        addr->type = NGX_STREAM_TROJAN_ADDR_IPV6;
+        memcpy(addr->host, &in6, sizeof(in6));
+        addr->host_len = sizeof(in6);
+        addr->wire_len = 1 + addr->host_len + 2;
+        return 1;
+    }
+
+    return 0;
+}
+
 
 int
 ngx_stream_trojan_addr_to_text(const ngx_stream_trojan_addr_t *addr, char *out, size_t out_len)

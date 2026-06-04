@@ -4,6 +4,8 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
+#include "ngx_stream_trojan_protocol.h"
+
 
 typedef enum {
     NGX_STREAM_TROJAN_RULE_DOMAIN_EXACT = 0,
@@ -118,6 +120,8 @@ ngx_stream_trojan_rule_match_e ngx_stream_trojan_route_rules_match_domain(
     ngx_stream_trojan_route_rules_t *group, ngx_str_t *host);
 ngx_stream_trojan_rule_match_e ngx_stream_trojan_route_rules_match_ip(
     ngx_stream_trojan_route_rules_t *group, struct sockaddr *sa);
+ngx_stream_trojan_rule_match_e ngx_stream_trojan_route_rules_match_target(
+    ngx_stream_trojan_route_rules_t *group, ngx_stream_trojan_addr_t *target);
 ngx_stream_trojan_rule_match_e ngx_stream_trojan_rules_match_domain(
     ngx_stream_trojan_rules_conf_t *rules, ngx_str_t *tag, ngx_str_t *host);
 ngx_stream_trojan_rule_match_e ngx_stream_trojan_rules_match_ip(

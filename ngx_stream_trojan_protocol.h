@@ -38,6 +38,7 @@ int ngx_stream_trojan_make_key_len(const uint8_t *password, size_t password_len,
     uint8_t out[NGX_STREAM_TROJAN_KEY_LEN]);
 int ngx_stream_trojan_key_equal(const uint8_t *a, const uint8_t *b);
 int ngx_stream_trojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_trojan_addr_t *addr);
+int ngx_stream_trojan_normalize_ip_literal(ngx_stream_trojan_addr_t *addr);
 int ngx_stream_trojan_addr_to_text(const ngx_stream_trojan_addr_t *addr, char *out, size_t out_len);
 int ngx_stream_trojan_parse_udp_frame(const uint8_t *buf, size_t len, ngx_stream_trojan_udp_frame_t *frame);
 int ngx_stream_trojan_pack_udp_frame(const ngx_stream_trojan_addr_t *addr, const uint8_t *payload,
