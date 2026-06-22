@@ -1,15 +1,15 @@
-# ngx_stream_trojan_module
+# ngx_stream_mtrojan_module
 
-A Trojan protocol server module for Nginx stream.
+Mtrojan protocol module for Nginx stream.
 
-`ngx_stream_trojan_module` implements the Trojan protocol directly inside
-Nginx's stream subsystem, enabling Nginx to act as a Trojan server while
-retaining the performance and deployment model of native stream modules.
+`ngx_stream_mtrojan_module` implements the Mtrojan protocol inside Nginx's
+stream subsystem, with compatibility support for the original Trojan protocol.
+It enables Nginx to act as an Mtrojan or Trojan server while retaining the
+performance and deployment model of native stream modules.
 
-The module supports Trojan over TLS, TCP relay, UDP relay, and configurable
-fallback forwarding for non-Trojan traffic.
+The module supports Mtrojan, Trojan over TLS, TCP relay, and UDP relay.
 
-## Features
+## Trojan Features
 
 - Trojan over TLS in the Nginx stream subsystem.
 - Native Nginx stream integration.
@@ -22,13 +22,14 @@ fallback forwarding for non-Trojan traffic.
 
 ## Build
 
-Build against an Nginx source tree with stream and stream SSL enabled:
+Build against an Nginx source tree with stream enabled. Stream SSL is required
+only when using the Trojan over TLS mode.
 
 ```sh
 ./configure \
   --with-stream \
   --with-stream_ssl_module \
-  --add-module=/path/to/ngx_stream_trojan_module
+  --add-module=/path/to/ngx_stream_mtrojan_module
 make
 ```
 
@@ -36,6 +37,8 @@ For dynamic module builds, use `--add-dynamic-module` instead of
 `--add-module` if your Nginx version supports it.
 
 ## Example
+
+Enable Trojan over TLS mode:
 
 ```nginx
 stream {

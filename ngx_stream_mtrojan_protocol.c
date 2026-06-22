@@ -1,11 +1,11 @@
-#include "ngx_stream_trojan_protocol.h"
+#include "ngx_stream_mtrojan_protocol.h"
 
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 
-static const uint8_t ngx_stream_trojan_hex[] = "0123456789abcdef";
-static const uint8_t ngx_stream_trojan_503_response[] =
+static const uint8_t ngx_stream_mtrojan_hex[] = "0123456789abcdef";
+static const uint8_t ngx_stream_mtrojan_503_response[] =
     "HTTP/1.1 503 Service Unavailable\r\n"
     "Content-Type: text/plain\r\n"
     "Content-Length: 19\r\n"
@@ -13,31 +13,31 @@ static const uint8_t ngx_stream_trojan_503_response[] =
     "\r\n"
     "Service Unavailable";
 
-#define NGX_STREAM_TROJAN_SHA224_DIGEST_LEN 28
-#define NGX_STREAM_TROJAN_SHA256_BLOCK_LEN 64
+#define NGX_STREAM_MTROJAN_SHA224_DIGEST_LEN 28
+#define NGX_STREAM_MTROJAN_SHA256_BLOCK_LEN 64
 
 typedef struct {
     uint32_t h[8];
-    uint8_t block[NGX_STREAM_TROJAN_SHA256_BLOCK_LEN];
+    uint8_t block[NGX_STREAM_MTROJAN_SHA256_BLOCK_LEN];
     uint64_t len;
     size_t block_len;
-} ngx_stream_trojan_sha224_ctx_t;
+} ngx_stream_mtrojan_sha224_ctx_t;
 
 static uint32_t
-ngx_stream_trojan_rotr32(uint32_t v, unsigned n)
+ngx_stream_mtrojan_rotr32(uint32_t v, unsigned n)
 {
     return (v >> n) | (v << (32 - n));
 }
 
 static uint32_t
-ngx_stream_trojan_load_be32(const uint8_t *p)
+ngx_stream_mtrojan_load_be32(const uint8_t *p)
 {
     return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16)
            | ((uint32_t) p[2] << 8) | (uint32_t) p[3];
 }
 
 static void
-ngx_stream_trojan_store_be32(uint8_t *p, uint32_t v)
+ngx_stream_mtrojan_store_be32(uint8_t *p, uint32_t v)
 {
     p[0] = (uint8_t) (v >> 24);
     p[1] = (uint8_t) (v >> 16);
@@ -45,7 +45,7 @@ ngx_stream_trojan_store_be32(uint8_t *p, uint32_t v)
     p[3] = (uint8_t) v;
 }
 
-static const uint32_t ngx_stream_trojan_sha256_k[64] = {
+static const uint32_t ngx_stream_mtrojan_sha256_k[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -65,7 +65,7 @@ static const uint32_t ngx_stream_trojan_sha256_k[64] = {
 };
 
 static void
-ngx_stream_trojan_sha224_init(ngx_stream_trojan_sha224_ctx_t *ctx)
+ngx_stream_mtrojan_sha224_init(ngx_stream_mtrojan_sha224_ctx_t *ctx)
 {
     ctx->h[0] = 0xc1059ed8;
     ctx->h[1] = 0x367cd507;
@@ -80,22 +80,22 @@ ngx_stream_trojan_sha224_init(ngx_stream_trojan_sha224_ctx_t *ctx)
 }
 
 static void
-ngx_stream_trojan_sha256_transform(ngx_stream_trojan_sha224_ctx_t *ctx, const uint8_t block[64])
+ngx_stream_mtrojan_sha256_transform(ngx_stream_mtrojan_sha224_ctx_t *ctx, const uint8_t block[64])
 {
     uint32_t w[64];
     uint32_t a, b, c, d, e, f, g, h, t1, t2;
     size_t i;
 
     for (i = 0; i < 16; i++) {
-        w[i] = ngx_stream_trojan_load_be32(block + i * 4);
+        w[i] = ngx_stream_mtrojan_load_be32(block + i * 4);
     }
 
     for (i = 16; i < 64; i++) {
-        uint32_t s0 = ngx_stream_trojan_rotr32(w[i - 15], 7)
-                      ^ ngx_stream_trojan_rotr32(w[i - 15], 18)
+        uint32_t s0 = ngx_stream_mtrojan_rotr32(w[i - 15], 7)
+                      ^ ngx_stream_mtrojan_rotr32(w[i - 15], 18)
                       ^ (w[i - 15] >> 3);
-        uint32_t s1 = ngx_stream_trojan_rotr32(w[i - 2], 17)
-                      ^ ngx_stream_trojan_rotr32(w[i - 2], 19)
+        uint32_t s1 = ngx_stream_mtrojan_rotr32(w[i - 2], 17)
+                      ^ ngx_stream_mtrojan_rotr32(w[i - 2], 19)
                       ^ (w[i - 2] >> 10);
         w[i] = w[i - 16] + s0 + w[i - 7] + s1;
     }
@@ -110,16 +110,16 @@ ngx_stream_trojan_sha256_transform(ngx_stream_trojan_sha224_ctx_t *ctx, const ui
     h = ctx->h[7];
 
     for (i = 0; i < 64; i++) {
-        uint32_t s1 = ngx_stream_trojan_rotr32(e, 6)
-                      ^ ngx_stream_trojan_rotr32(e, 11)
-                      ^ ngx_stream_trojan_rotr32(e, 25);
+        uint32_t s1 = ngx_stream_mtrojan_rotr32(e, 6)
+                      ^ ngx_stream_mtrojan_rotr32(e, 11)
+                      ^ ngx_stream_mtrojan_rotr32(e, 25);
         uint32_t ch = (e & f) ^ (~e & g);
-        uint32_t s0 = ngx_stream_trojan_rotr32(a, 2)
-                      ^ ngx_stream_trojan_rotr32(a, 13)
-                      ^ ngx_stream_trojan_rotr32(a, 22);
+        uint32_t s0 = ngx_stream_mtrojan_rotr32(a, 2)
+                      ^ ngx_stream_mtrojan_rotr32(a, 13)
+                      ^ ngx_stream_mtrojan_rotr32(a, 22);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
 
-        t1 = h + s1 + ch + ngx_stream_trojan_sha256_k[i] + w[i];
+        t1 = h + s1 + ch + ngx_stream_mtrojan_sha256_k[i] + w[i];
         t2 = s0 + maj;
         h = g;
         g = f;
@@ -142,14 +142,14 @@ ngx_stream_trojan_sha256_transform(ngx_stream_trojan_sha224_ctx_t *ctx, const ui
 }
 
 static void
-ngx_stream_trojan_sha224_update(ngx_stream_trojan_sha224_ctx_t *ctx, const uint8_t *data, size_t len)
+ngx_stream_mtrojan_sha224_update(ngx_stream_mtrojan_sha224_ctx_t *ctx, const uint8_t *data, size_t len)
 {
     size_t n;
 
     ctx->len += (uint64_t) len * 8;
 
     while (len > 0) {
-        n = NGX_STREAM_TROJAN_SHA256_BLOCK_LEN - ctx->block_len;
+        n = NGX_STREAM_MTROJAN_SHA256_BLOCK_LEN - ctx->block_len;
         if (n > len) {
             n = len;
         }
@@ -159,16 +159,16 @@ ngx_stream_trojan_sha224_update(ngx_stream_trojan_sha224_ctx_t *ctx, const uint8
         data += n;
         len -= n;
 
-        if (ctx->block_len == NGX_STREAM_TROJAN_SHA256_BLOCK_LEN) {
-            ngx_stream_trojan_sha256_transform(ctx, ctx->block);
+        if (ctx->block_len == NGX_STREAM_MTROJAN_SHA256_BLOCK_LEN) {
+            ngx_stream_mtrojan_sha256_transform(ctx, ctx->block);
             ctx->block_len = 0;
         }
     }
 }
 
 static void
-ngx_stream_trojan_sha224_final(ngx_stream_trojan_sha224_ctx_t *ctx,
-    uint8_t out[NGX_STREAM_TROJAN_SHA224_DIGEST_LEN])
+ngx_stream_mtrojan_sha224_final(ngx_stream_mtrojan_sha224_ctx_t *ctx,
+    uint8_t out[NGX_STREAM_MTROJAN_SHA224_DIGEST_LEN])
 {
     uint8_t len_buf[8];
     size_t i;
@@ -181,64 +181,64 @@ ngx_stream_trojan_sha224_final(ngx_stream_trojan_sha224_ctx_t *ctx,
 
     if (ctx->block_len > 56) {
         memset(ctx->block + ctx->block_len, 0, 64 - ctx->block_len);
-        ngx_stream_trojan_sha256_transform(ctx, ctx->block);
+        ngx_stream_mtrojan_sha256_transform(ctx, ctx->block);
         ctx->block_len = 0;
     }
 
     memset(ctx->block + ctx->block_len, 0, 56 - ctx->block_len);
     memcpy(ctx->block + 56, len_buf, sizeof(len_buf));
-    ngx_stream_trojan_sha256_transform(ctx, ctx->block);
+    ngx_stream_mtrojan_sha256_transform(ctx, ctx->block);
 
     for (i = 0; i < 7; i++) {
-        ngx_stream_trojan_store_be32(out + i * 4, ctx->h[i]);
+        ngx_stream_mtrojan_store_be32(out + i * 4, ctx->h[i]);
     }
 }
 
 static void
-ngx_stream_trojan_sha224(const uint8_t *data, size_t len,
-    uint8_t out[NGX_STREAM_TROJAN_SHA224_DIGEST_LEN])
+ngx_stream_mtrojan_sha224(const uint8_t *data, size_t len,
+    uint8_t out[NGX_STREAM_MTROJAN_SHA224_DIGEST_LEN])
 {
-    ngx_stream_trojan_sha224_ctx_t ctx;
+    ngx_stream_mtrojan_sha224_ctx_t ctx;
 
-    ngx_stream_trojan_sha224_init(&ctx);
-    ngx_stream_trojan_sha224_update(&ctx, data, len);
-    ngx_stream_trojan_sha224_final(&ctx, out);
+    ngx_stream_mtrojan_sha224_init(&ctx);
+    ngx_stream_mtrojan_sha224_update(&ctx, data, len);
+    ngx_stream_mtrojan_sha224_final(&ctx, out);
 }
 
 int
-ngx_stream_trojan_make_key(const char *password, uint8_t out[NGX_STREAM_TROJAN_KEY_LEN])
+ngx_stream_mtrojan_make_key(const char *password, uint8_t out[NGX_STREAM_MTROJAN_KEY_LEN])
 {
     if (password == NULL || out == NULL) {
         return -1;
     }
 
-    return ngx_stream_trojan_make_key_len((const uint8_t *) password,
+    return ngx_stream_mtrojan_make_key_len((const uint8_t *) password,
                                           strlen(password), out);
 }
 
 int
-ngx_stream_trojan_make_key_len(const uint8_t *password, size_t password_len,
-    uint8_t out[NGX_STREAM_TROJAN_KEY_LEN])
+ngx_stream_mtrojan_make_key_len(const uint8_t *password, size_t password_len,
+    uint8_t out[NGX_STREAM_MTROJAN_KEY_LEN])
 {
-    uint8_t digest[NGX_STREAM_TROJAN_SHA224_DIGEST_LEN];
+    uint8_t digest[NGX_STREAM_MTROJAN_SHA224_DIGEST_LEN];
     size_t i;
 
     if (password == NULL || out == NULL) {
         return -1;
     }
 
-    ngx_stream_trojan_sha224(password, password_len, digest);
+    ngx_stream_mtrojan_sha224(password, password_len, digest);
 
-    for (i = 0; i < NGX_STREAM_TROJAN_SHA224_DIGEST_LEN; i++) {
-        out[i * 2] = ngx_stream_trojan_hex[digest[i] >> 4];
-        out[i * 2 + 1] = ngx_stream_trojan_hex[digest[i] & 0x0f];
+    for (i = 0; i < NGX_STREAM_MTROJAN_SHA224_DIGEST_LEN; i++) {
+        out[i * 2] = ngx_stream_mtrojan_hex[digest[i] >> 4];
+        out[i * 2 + 1] = ngx_stream_mtrojan_hex[digest[i] & 0x0f];
     }
 
     return 0;
 }
 
 int
-ngx_stream_trojan_key_equal(const uint8_t *a, const uint8_t *b)
+ngx_stream_mtrojan_key_equal(const uint8_t *a, const uint8_t *b)
 {
     uint8_t diff = 0;
     size_t i;
@@ -247,7 +247,7 @@ ngx_stream_trojan_key_equal(const uint8_t *a, const uint8_t *b)
         return 0;
     }
 
-    for (i = 0; i < NGX_STREAM_TROJAN_KEY_LEN; i++) {
+    for (i = 0; i < NGX_STREAM_MTROJAN_KEY_LEN; i++) {
         diff |= a[i] ^ b[i];
     }
 
@@ -255,7 +255,7 @@ ngx_stream_trojan_key_equal(const uint8_t *a, const uint8_t *b)
 }
 
 int
-ngx_stream_trojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_trojan_addr_t *addr)
+ngx_stream_mtrojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_mtrojan_addr_t *addr)
 {
     size_t host_len;
     size_t wire_len;
@@ -268,7 +268,7 @@ ngx_stream_trojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_trojan_a
     addr->type = buf[0];
 
     switch (addr->type) {
-    case NGX_STREAM_TROJAN_ADDR_IPV4:
+    case NGX_STREAM_MTROJAN_ADDR_IPV4:
         host_len = 4;
         wire_len = 1 + host_len + 2;
         if (len < wire_len) {
@@ -280,7 +280,7 @@ ngx_stream_trojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_trojan_a
         addr->wire_len = wire_len;
         return 0;
 
-    case NGX_STREAM_TROJAN_ADDR_DOMAIN:
+    case NGX_STREAM_MTROJAN_ADDR_DOMAIN:
         if (len < 2) {
             return -1;
         }
@@ -295,7 +295,7 @@ ngx_stream_trojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_trojan_a
         addr->wire_len = wire_len;
         return 0;
 
-    case NGX_STREAM_TROJAN_ADDR_IPV6:
+    case NGX_STREAM_MTROJAN_ADDR_IPV6:
         host_len = 16;
         wire_len = 1 + host_len + 2;
         if (len < wire_len) {
@@ -314,7 +314,7 @@ ngx_stream_trojan_parse_addr(const uint8_t *buf, size_t len, ngx_stream_trojan_a
 
 
 static int
-ngx_stream_trojan_tail_has_colon(const uint8_t *data, size_t len)
+ngx_stream_mtrojan_tail_has_colon(const uint8_t *data, size_t len)
 {
     size_t i, start;
 
@@ -331,14 +331,14 @@ ngx_stream_trojan_tail_has_colon(const uint8_t *data, size_t len)
 
 
 int
-ngx_stream_trojan_normalize_ip_literal(ngx_stream_trojan_addr_t *addr)
+ngx_stream_mtrojan_normalize_ip_literal(ngx_stream_mtrojan_addr_t *addr)
 {
     uint8_t last;
     struct in_addr in;
     struct in6_addr in6;
     char text[INET6_ADDRSTRLEN];
 
-    if (addr == NULL || addr->type != NGX_STREAM_TROJAN_ADDR_DOMAIN
+    if (addr == NULL || addr->type != NGX_STREAM_MTROJAN_ADDR_DOMAIN
         || addr->host_len == 0 || addr->host_len >= sizeof(text))
     {
         return 0;
@@ -347,7 +347,7 @@ ngx_stream_trojan_normalize_ip_literal(ngx_stream_trojan_addr_t *addr)
     last = addr->host[addr->host_len - 1];
 
     if ((last < '0' || last > '9')
-        && !ngx_stream_trojan_tail_has_colon(addr->host, addr->host_len))
+        && !ngx_stream_mtrojan_tail_has_colon(addr->host, addr->host_len))
     {
         return 0;
     }
@@ -356,7 +356,7 @@ ngx_stream_trojan_normalize_ip_literal(ngx_stream_trojan_addr_t *addr)
     text[addr->host_len] = '\0';
 
     if (inet_pton(AF_INET, text, &in) == 1) {
-        addr->type = NGX_STREAM_TROJAN_ADDR_IPV4;
+        addr->type = NGX_STREAM_MTROJAN_ADDR_IPV4;
         memcpy(addr->host, &in, sizeof(in));
         addr->host_len = sizeof(in);
         addr->wire_len = 1 + addr->host_len + 2;
@@ -364,7 +364,7 @@ ngx_stream_trojan_normalize_ip_literal(ngx_stream_trojan_addr_t *addr)
     }
 
     if (inet_pton(AF_INET6, text, &in6) == 1) {
-        addr->type = NGX_STREAM_TROJAN_ADDR_IPV6;
+        addr->type = NGX_STREAM_MTROJAN_ADDR_IPV6;
         memcpy(addr->host, &in6, sizeof(in6));
         addr->host_len = sizeof(in6);
         addr->wire_len = 1 + addr->host_len + 2;
@@ -376,7 +376,7 @@ ngx_stream_trojan_normalize_ip_literal(ngx_stream_trojan_addr_t *addr)
 
 
 int
-ngx_stream_trojan_addr_to_text(const ngx_stream_trojan_addr_t *addr, char *out, size_t out_len)
+ngx_stream_mtrojan_addr_to_text(const ngx_stream_mtrojan_addr_t *addr, char *out, size_t out_len)
 {
     int n;
 
@@ -385,7 +385,7 @@ ngx_stream_trojan_addr_to_text(const ngx_stream_trojan_addr_t *addr, char *out, 
     }
 
     switch (addr->type) {
-    case NGX_STREAM_TROJAN_ADDR_IPV4:
+    case NGX_STREAM_MTROJAN_ADDR_IPV4:
         if (addr->host_len != 4) {
             return -1;
         }
@@ -394,12 +394,12 @@ ngx_stream_trojan_addr_to_text(const ngx_stream_trojan_addr_t *addr, char *out, 
                      (unsigned) addr->port);
         break;
 
-    case NGX_STREAM_TROJAN_ADDR_DOMAIN:
+    case NGX_STREAM_MTROJAN_ADDR_DOMAIN:
         n = snprintf(out, out_len, "%.*s:%u", (int) addr->host_len,
                      (const char *) addr->host, (unsigned) addr->port);
         break;
 
-    case NGX_STREAM_TROJAN_ADDR_IPV6:
+    case NGX_STREAM_MTROJAN_ADDR_IPV6:
         if (addr->host_len != 16) {
             return -1;
         }
@@ -424,7 +424,7 @@ ngx_stream_trojan_addr_to_text(const ngx_stream_trojan_addr_t *addr, char *out, 
 }
 
 int
-ngx_stream_trojan_parse_udp_frame(const uint8_t *buf, size_t len, ngx_stream_trojan_udp_frame_t *frame)
+ngx_stream_mtrojan_parse_udp_frame(const uint8_t *buf, size_t len, ngx_stream_mtrojan_udp_frame_t *frame)
 {
     size_t pos;
     size_t wire_len;
@@ -435,7 +435,7 @@ ngx_stream_trojan_parse_udp_frame(const uint8_t *buf, size_t len, ngx_stream_tro
 
     memset(frame, 0, sizeof(*frame));
 
-    if (ngx_stream_trojan_parse_addr(buf, len, &frame->addr) != 0) {
+    if (ngx_stream_mtrojan_parse_addr(buf, len, &frame->addr) != 0) {
         return -1;
     }
 
@@ -460,7 +460,7 @@ ngx_stream_trojan_parse_udp_frame(const uint8_t *buf, size_t len, ngx_stream_tro
 }
 
 int
-ngx_stream_trojan_pack_udp_frame(const ngx_stream_trojan_addr_t *addr, const uint8_t *payload,
+ngx_stream_mtrojan_pack_udp_frame(const ngx_stream_mtrojan_addr_t *addr, const uint8_t *payload,
     uint16_t payload_len, uint8_t *out, size_t out_len, size_t *written)
 {
     size_t pos = 0;
@@ -476,13 +476,13 @@ ngx_stream_trojan_pack_udp_frame(const ngx_stream_trojan_addr_t *addr, const uin
     out[pos++] = addr->type;
 
     switch (addr->type) {
-    case NGX_STREAM_TROJAN_ADDR_IPV4:
-    case NGX_STREAM_TROJAN_ADDR_IPV6:
+    case NGX_STREAM_MTROJAN_ADDR_IPV4:
+    case NGX_STREAM_MTROJAN_ADDR_IPV6:
         memcpy(out + pos, addr->host, addr->host_len);
         pos += addr->host_len;
         break;
 
-    case NGX_STREAM_TROJAN_ADDR_DOMAIN:
+    case NGX_STREAM_MTROJAN_ADDR_DOMAIN:
         out[pos++] = (uint8_t) addr->host_len;
         memcpy(out + pos, addr->host, addr->host_len);
         pos += addr->host_len;
@@ -510,18 +510,18 @@ ngx_stream_trojan_pack_udp_frame(const ngx_stream_trojan_addr_t *addr, const uin
 
 
 int
-ngx_stream_trojan_use_nginx_resolver(uint8_t addr_type, int resolver_configured)
+ngx_stream_mtrojan_use_nginx_resolver(uint8_t addr_type, int resolver_configured)
 {
-    return addr_type == NGX_STREAM_TROJAN_ADDR_DOMAIN && resolver_configured;
+    return addr_type == NGX_STREAM_MTROJAN_ADDR_DOMAIN && resolver_configured;
 }
 
 
 const uint8_t *
-ngx_stream_trojan_default_fallback_response(size_t *len)
+ngx_stream_mtrojan_default_fallback_response(size_t *len)
 {
     if (len != NULL) {
-        *len = sizeof(ngx_stream_trojan_503_response) - 1;
+        *len = sizeof(ngx_stream_mtrojan_503_response) - 1;
     }
 
-    return ngx_stream_trojan_503_response;
+    return ngx_stream_mtrojan_503_response;
 }

@@ -4,91 +4,91 @@
 
 #include <strings.h>
 
-#include "ngx_stream_trojan_rules.h"
+#include "ngx_stream_mtrojan_rules.h"
 
 
 typedef struct {
-    ngx_stream_trojan_route_rules_t  *group;
-} ngx_stream_trojan_rules_block_ctx_t;
+    ngx_stream_mtrojan_route_rules_t  *group;
+} ngx_stream_mtrojan_rules_block_ctx_t;
 
 
 typedef struct {
     ngx_str_t                         key;
     uint8_t                           flags;
     uint32_t                          hash;
-} ngx_stream_trojan_domain_build_entry_t;
+} ngx_stream_mtrojan_domain_build_entry_t;
 
 
 typedef struct {
     ngx_uint_t                        bucket;
     ngx_uint_t                        count;
-} ngx_stream_trojan_mph_bucket_sort_t;
+} ngx_stream_mtrojan_mph_bucket_sort_t;
 
 
-#define NGX_STREAM_TROJAN_DOMAIN_SUFFIX_INCLUDE_ROOT  0x01
+#define NGX_STREAM_MTROJAN_DOMAIN_SUFFIX_INCLUDE_ROOT  0x01
 
 
-static char *ngx_stream_trojan_rules_block(ngx_conf_t *cf,
+static char *ngx_stream_mtrojan_rules_block(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
-static ngx_int_t ngx_stream_trojan_rules_tag_exists(ngx_array_t *groups,
+static ngx_int_t ngx_stream_mtrojan_rules_tag_exists(ngx_array_t *groups,
     ngx_str_t *tag);
-static char *ngx_stream_trojan_rules_add_domain(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group, ngx_str_t *value);
-static char *ngx_stream_trojan_rules_add_ip(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group, ngx_str_t *value);
-static ngx_stream_trojan_rules_conf_t *ngx_stream_trojan_rules_get_conf(
+static char *ngx_stream_mtrojan_rules_add_domain(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group, ngx_str_t *value);
+static char *ngx_stream_mtrojan_rules_add_ip(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group, ngx_str_t *value);
+static ngx_stream_mtrojan_rules_conf_t *ngx_stream_mtrojan_rules_get_conf(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static ngx_int_t ngx_stream_trojan_route_rules_compile(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group);
-static ngx_int_t ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group);
-static ngx_int_t ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group);
-static ngx_int_t ngx_stream_trojan_route_rules_add_domain_entry(ngx_conf_t *cf,
+static ngx_int_t ngx_stream_mtrojan_route_rules_compile(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group);
+static ngx_int_t ngx_stream_mtrojan_route_rules_compile_domains(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group);
+static ngx_int_t ngx_stream_mtrojan_route_rules_compile_ips(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group);
+static ngx_int_t ngx_stream_mtrojan_route_rules_add_domain_entry(ngx_conf_t *cf,
     ngx_pool_t *pool, ngx_array_t *entries, u_char *data, size_t len,
     uint8_t flags);
-static ngx_int_t ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
+static ngx_int_t ngx_stream_mtrojan_route_rules_build_domain_mph(ngx_conf_t *cf,
     ngx_pool_t *temp_pool, ngx_array_t *entries,
-    ngx_stream_trojan_domain_mph_t *mph);
-static ngx_stream_trojan_mph_slot_t *
-    ngx_stream_trojan_route_rules_domain_mph_find(
-    ngx_stream_trojan_domain_mph_t *mph, u_char *data, size_t len);
-static uint32_t ngx_stream_trojan_route_rules_hash(u_char *data, size_t len,
+    ngx_stream_mtrojan_domain_mph_t *mph);
+static ngx_stream_mtrojan_mph_slot_t *
+    ngx_stream_mtrojan_route_rules_domain_mph_find(
+    ngx_stream_mtrojan_domain_mph_t *mph, u_char *data, size_t len);
+static uint32_t ngx_stream_mtrojan_route_rules_hash(u_char *data, size_t len,
     uint32_t seed);
-static ngx_uint_t ngx_stream_trojan_route_rules_next_power(ngx_uint_t n);
-static ngx_uint_t ngx_stream_trojan_route_rules_ipv4_prefix(uint32_t mask);
-static uint32_t ngx_stream_trojan_route_rules_ipv4_mask(ngx_uint_t prefix);
+static ngx_uint_t ngx_stream_mtrojan_route_rules_next_power(ngx_uint_t n);
+static ngx_uint_t ngx_stream_mtrojan_route_rules_ipv4_prefix(uint32_t mask);
+static uint32_t ngx_stream_mtrojan_route_rules_ipv4_mask(ngx_uint_t prefix);
 #if (NGX_HAVE_INET6)
-static ngx_uint_t ngx_stream_trojan_route_rules_ipv6_prefix(u_char *mask);
-static void ngx_stream_trojan_route_rules_ipv6_mask(u_char *dst, u_char *src,
+static ngx_uint_t ngx_stream_mtrojan_route_rules_ipv6_prefix(u_char *mask);
+static void ngx_stream_mtrojan_route_rules_ipv6_mask(u_char *dst, u_char *src,
     ngx_uint_t prefix);
 #endif
-static int ngx_libc_cdecl ngx_stream_trojan_cmp_domain_entries(
+static int ngx_libc_cdecl ngx_stream_mtrojan_cmp_domain_entries(
     const void *one, const void *two);
-static int ngx_libc_cdecl ngx_stream_trojan_cmp_mph_buckets(
+static int ngx_libc_cdecl ngx_stream_mtrojan_cmp_mph_buckets(
     const void *one, const void *two);
-static int ngx_libc_cdecl ngx_stream_trojan_cmp_ipv4_prefix(
+static int ngx_libc_cdecl ngx_stream_mtrojan_cmp_ipv4_prefix(
     const void *one, const void *two);
 #if (NGX_HAVE_INET6)
-static int ngx_libc_cdecl ngx_stream_trojan_cmp_ipv6_prefix(
+static int ngx_libc_cdecl ngx_stream_mtrojan_cmp_ipv6_prefix(
     const void *one, const void *two);
 #endif
-static ngx_uint_t ngx_stream_trojan_route_rules_ipv4_find(
-    ngx_stream_trojan_ipv4_prefix_bucket_t *bucket, uint32_t addr);
+static ngx_uint_t ngx_stream_mtrojan_route_rules_ipv4_find(
+    ngx_stream_mtrojan_ipv4_prefix_bucket_t *bucket, uint32_t addr);
 #if (NGX_HAVE_INET6)
-static ngx_uint_t ngx_stream_trojan_route_rules_ipv6_find(
-    ngx_stream_trojan_ipv6_prefix_bucket_t *bucket, u_char *addr);
+static ngx_uint_t ngx_stream_mtrojan_route_rules_ipv6_find(
+    ngx_stream_mtrojan_ipv6_prefix_bucket_t *bucket, u_char *addr);
 #endif
-static ngx_int_t ngx_stream_trojan_route_rules_target_to_sockaddr(
-    ngx_stream_trojan_addr_t *target, ngx_sockaddr_t *sockaddr);
+static ngx_int_t ngx_stream_mtrojan_route_rules_target_to_sockaddr(
+    ngx_stream_mtrojan_addr_t *target, ngx_sockaddr_t *sockaddr);
 
 
 void *
-ngx_stream_trojan_create_main_conf(ngx_conf_t *cf)
+ngx_stream_mtrojan_create_main_conf(ngx_conf_t *cf)
 {
-    ngx_stream_trojan_main_conf_t  *conf;
+    ngx_stream_mtrojan_main_conf_t  *conf;
 
-    conf = ngx_pcalloc(cf->pool, sizeof(ngx_stream_trojan_main_conf_t));
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_stream_mtrojan_main_conf_t));
     if (conf == NULL) {
         return NULL;
     }
@@ -98,7 +98,7 @@ ngx_stream_trojan_create_main_conf(ngx_conf_t *cf)
 
 
 ngx_int_t
-ngx_stream_trojan_rule_reserved_value(ngx_str_t *value)
+ngx_stream_mtrojan_rule_reserved_value(ngx_str_t *value)
 {
     if (value->len == sizeof("include") - 1
         && ngx_strncmp(value->data, "include", value->len) == 0)
@@ -111,14 +111,14 @@ ngx_stream_trojan_rule_reserved_value(ngx_str_t *value)
 
 
 ngx_int_t
-ngx_stream_trojan_rule_domain_type(ngx_str_t *value,
-    ngx_stream_trojan_rule_domain_type_e *type)
+ngx_stream_mtrojan_rule_domain_type(ngx_str_t *value,
+    ngx_stream_mtrojan_rule_domain_type_e *type)
 {
     if (value->len == 0) {
         return NGX_ERROR;
     }
 
-    if (ngx_stream_trojan_rule_reserved_value(value)) {
+    if (ngx_stream_mtrojan_rule_reserved_value(value)) {
         return NGX_ERROR;
     }
 
@@ -127,7 +127,7 @@ ngx_stream_trojan_rule_domain_type(ngx_str_t *value,
             return NGX_ERROR;
         }
 
-        *type = NGX_STREAM_TROJAN_RULE_DOMAIN_REGEX;
+        *type = NGX_STREAM_MTROJAN_RULE_DOMAIN_REGEX;
         return NGX_OK;
     }
 
@@ -136,7 +136,7 @@ ngx_stream_trojan_rule_domain_type(ngx_str_t *value,
             return NGX_ERROR;
         }
 
-        *type = NGX_STREAM_TROJAN_RULE_DOMAIN_SUFFIX;
+        *type = NGX_STREAM_MTROJAN_RULE_DOMAIN_SUFFIX;
         return NGX_OK;
     }
 
@@ -144,17 +144,17 @@ ngx_stream_trojan_rule_domain_type(ngx_str_t *value,
         && value->data[0] == '*'
         && value->data[1] == '.')
     {
-        *type = NGX_STREAM_TROJAN_RULE_DOMAIN_WILDCARD;
+        *type = NGX_STREAM_MTROJAN_RULE_DOMAIN_WILDCARD;
         return NGX_OK;
     }
 
-    *type = NGX_STREAM_TROJAN_RULE_DOMAIN_EXACT;
+    *type = NGX_STREAM_MTROJAN_RULE_DOMAIN_EXACT;
     return NGX_OK;
 }
 
 
 ngx_uint_t
-ngx_stream_trojan_rule_domain_match(ngx_stream_trojan_domain_rule_t *rule,
+ngx_stream_mtrojan_rule_domain_match(ngx_stream_mtrojan_domain_rule_t *rule,
     ngx_str_t *host)
 {
     ngx_str_t  suffix;
@@ -165,13 +165,13 @@ ngx_stream_trojan_rule_domain_match(ngx_stream_trojan_domain_rule_t *rule,
 
     switch (rule->type) {
 
-    case NGX_STREAM_TROJAN_RULE_DOMAIN_EXACT:
+    case NGX_STREAM_MTROJAN_RULE_DOMAIN_EXACT:
         return host->len == rule->value.len
                && strncasecmp((char *) host->data, (char *) rule->value.data,
                               host->len)
                   == 0;
 
-    case NGX_STREAM_TROJAN_RULE_DOMAIN_SUFFIX:
+    case NGX_STREAM_MTROJAN_RULE_DOMAIN_SUFFIX:
         suffix.data = rule->value.data + 1;
         suffix.len = rule->value.len - 1;
 
@@ -193,7 +193,7 @@ ngx_stream_trojan_rule_domain_match(ngx_stream_trojan_domain_rule_t *rule,
                            (char *) suffix.data, suffix.len)
                == 0;
 
-    case NGX_STREAM_TROJAN_RULE_DOMAIN_WILDCARD:
+    case NGX_STREAM_MTROJAN_RULE_DOMAIN_WILDCARD:
         suffix.data = rule->value.data + 2;
         suffix.len = rule->value.len - 2;
 
@@ -209,7 +209,7 @@ ngx_stream_trojan_rule_domain_match(ngx_stream_trojan_domain_rule_t *rule,
                            (char *) suffix.data, suffix.len)
                == 0;
 
-    case NGX_STREAM_TROJAN_RULE_DOMAIN_REGEX:
+    case NGX_STREAM_MTROJAN_RULE_DOMAIN_REGEX:
 #if (NGX_PCRE)
         return ngx_regex_exec(rule->regex, host, NULL, 0) >= 0;
 #else
@@ -222,7 +222,7 @@ ngx_stream_trojan_rule_domain_match(ngx_stream_trojan_domain_rule_t *rule,
 
 
 ngx_uint_t
-ngx_stream_trojan_rule_ip_match(ngx_stream_trojan_ip_rule_t *rule,
+ngx_stream_mtrojan_rule_ip_match(ngx_stream_mtrojan_ip_rule_t *rule,
     struct sockaddr *sa)
 {
     ngx_uint_t              n;
@@ -261,12 +261,12 @@ ngx_stream_trojan_rule_ip_match(ngx_stream_trojan_ip_rule_t *rule,
 }
 
 
-ngx_stream_trojan_route_rules_t *
-ngx_stream_trojan_rules_find(ngx_stream_trojan_rules_conf_t *rules,
+ngx_stream_mtrojan_route_rules_t *
+ngx_stream_mtrojan_rules_find(ngx_stream_mtrojan_rules_conf_t *rules,
     ngx_str_t *tag)
 {
     ngx_uint_t                         i;
-    ngx_stream_trojan_route_rules_t   *group;
+    ngx_stream_mtrojan_route_rules_t   *group;
 
     if (rules == NULL || rules->groups == NULL) {
         return NULL;
@@ -286,17 +286,17 @@ ngx_stream_trojan_rules_find(ngx_stream_trojan_rules_conf_t *rules,
 }
 
 
-ngx_stream_trojan_rule_match_e
-ngx_stream_trojan_route_rules_match_domain(
-    ngx_stream_trojan_route_rules_t *group, ngx_str_t *host)
+ngx_stream_mtrojan_rule_match_e
+ngx_stream_mtrojan_route_rules_match_domain(
+    ngx_stream_mtrojan_route_rules_t *group, ngx_str_t *host)
 {
     ngx_uint_t                         i, suffix;
-    ngx_stream_trojan_domain_rule_t   *rule;
-    ngx_stream_trojan_mph_slot_t      *slot;
+    ngx_stream_mtrojan_domain_rule_t   *rule;
+    ngx_stream_mtrojan_mph_slot_t      *slot;
     u_char                             name[255];
 
     if (group == NULL || group->domains.nelts == 0) {
-        return NGX_STREAM_TROJAN_RULE_NOT_APPLICABLE;
+        return NGX_STREAM_MTROJAN_RULE_NOT_APPLICABLE;
     }
 
     if (group->compiled && host->len <= sizeof(name)) {
@@ -304,20 +304,20 @@ ngx_stream_trojan_route_rules_match_domain(
             name[i] = ngx_tolower(host->data[i]);
         }
 
-        if (ngx_stream_trojan_route_rules_domain_mph_find(&group->exact, name,
+        if (ngx_stream_mtrojan_route_rules_domain_mph_find(&group->exact, name,
                                                           host->len)
             != NULL)
         {
-            return NGX_STREAM_TROJAN_RULE_MATCH;
+            return NGX_STREAM_MTROJAN_RULE_MATCH;
         }
 
-        slot = ngx_stream_trojan_route_rules_domain_mph_find(&group->suffix,
+        slot = ngx_stream_mtrojan_route_rules_domain_mph_find(&group->suffix,
                                                              name, host->len);
         if (slot != NULL
             && (slot->flags
-                & NGX_STREAM_TROJAN_DOMAIN_SUFFIX_INCLUDE_ROOT))
+                & NGX_STREAM_MTROJAN_DOMAIN_SUFFIX_INCLUDE_ROOT))
         {
-            return NGX_STREAM_TROJAN_RULE_MATCH;
+            return NGX_STREAM_MTROJAN_RULE_MATCH;
         }
 
         for (suffix = 0; suffix < host->len; suffix++) {
@@ -325,46 +325,46 @@ ngx_stream_trojan_route_rules_match_domain(
                 continue;
             }
 
-            slot = ngx_stream_trojan_route_rules_domain_mph_find(
+            slot = ngx_stream_mtrojan_route_rules_domain_mph_find(
                 &group->suffix, name + suffix + 1, host->len - suffix - 1);
             if (slot != NULL) {
-                return NGX_STREAM_TROJAN_RULE_MATCH;
+                return NGX_STREAM_MTROJAN_RULE_MATCH;
             }
         }
 
         if (group->regex_domains == NULL || group->regex_domains->nelts == 0) {
-            return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+            return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
         }
 
         rule = group->regex_domains->elts;
 
         for (i = 0; i < group->regex_domains->nelts; i++) {
-            if (ngx_stream_trojan_rule_domain_match(&rule[i], host)) {
-                return NGX_STREAM_TROJAN_RULE_MATCH;
+            if (ngx_stream_mtrojan_rule_domain_match(&rule[i], host)) {
+                return NGX_STREAM_MTROJAN_RULE_MATCH;
             }
         }
 
-        return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+        return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
     }
 
     rule = group->domains.elts;
     for (i = 0; i < group->domains.nelts; i++) {
-        if (ngx_stream_trojan_rule_domain_match(&rule[i], host)) {
-            return NGX_STREAM_TROJAN_RULE_MATCH;
+        if (ngx_stream_mtrojan_rule_domain_match(&rule[i], host)) {
+            return NGX_STREAM_MTROJAN_RULE_MATCH;
         }
     }
 
-    return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+    return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
 }
 
 
-ngx_stream_trojan_rule_match_e
-ngx_stream_trojan_route_rules_match_ip(ngx_stream_trojan_route_rules_t *group,
+ngx_stream_mtrojan_rule_match_e
+ngx_stream_mtrojan_route_rules_match_ip(ngx_stream_mtrojan_route_rules_t *group,
     struct sockaddr *sa)
 {
     ngx_int_t                     prefix;
     ngx_uint_t                    i;
-    ngx_stream_trojan_ip_rule_t  *rule;
+    ngx_stream_mtrojan_ip_rule_t  *rule;
     struct sockaddr_in           *sin;
     uint32_t                      addr, masked;
 #if (NGX_HAVE_INET6)
@@ -373,7 +373,7 @@ ngx_stream_trojan_route_rules_match_ip(ngx_stream_trojan_route_rules_t *group,
 #endif
 
     if (group == NULL || group->ips.nelts == 0) {
-        return NGX_STREAM_TROJAN_RULE_NOT_APPLICABLE;
+        return NGX_STREAM_MTROJAN_RULE_NOT_APPLICABLE;
     }
 
     if (group->compiled) {
@@ -387,16 +387,16 @@ ngx_stream_trojan_route_rules_match_ip(ngx_stream_trojan_route_rules_t *group,
                 }
 
                 masked = addr
-                         & ngx_stream_trojan_route_rules_ipv4_mask(prefix);
+                         & ngx_stream_mtrojan_route_rules_ipv4_mask(prefix);
 
-                if (ngx_stream_trojan_route_rules_ipv4_find(
+                if (ngx_stream_mtrojan_route_rules_ipv4_find(
                     &group->ipv4[prefix], masked))
                 {
-                    return NGX_STREAM_TROJAN_RULE_MATCH;
+                    return NGX_STREAM_MTROJAN_RULE_MATCH;
                 }
             }
 
-            return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+            return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
         }
 
 #if (NGX_HAVE_INET6)
@@ -408,92 +408,92 @@ ngx_stream_trojan_route_rules_match_ip(ngx_stream_trojan_route_rules_t *group,
                     continue;
                 }
 
-                ngx_stream_trojan_route_rules_ipv6_mask(
+                ngx_stream_mtrojan_route_rules_ipv6_mask(
                     masked6, sin6->sin6_addr.s6_addr, prefix);
 
-                if (ngx_stream_trojan_route_rules_ipv6_find(
+                if (ngx_stream_mtrojan_route_rules_ipv6_find(
                     &group->ipv6[prefix], masked6))
                 {
-                    return NGX_STREAM_TROJAN_RULE_MATCH;
+                    return NGX_STREAM_MTROJAN_RULE_MATCH;
                 }
             }
 
-            return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+            return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
         }
 #endif
 
-        return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+        return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
     }
 
     rule = group->ips.elts;
 
     for (i = 0; i < group->ips.nelts; i++) {
-        if (ngx_stream_trojan_rule_ip_match(&rule[i], sa)) {
-            return NGX_STREAM_TROJAN_RULE_MATCH;
+        if (ngx_stream_mtrojan_rule_ip_match(&rule[i], sa)) {
+            return NGX_STREAM_MTROJAN_RULE_MATCH;
         }
     }
 
-    return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+    return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
 }
 
 
-ngx_stream_trojan_rule_match_e
-ngx_stream_trojan_rules_match_domain(ngx_stream_trojan_rules_conf_t *rules,
+ngx_stream_mtrojan_rule_match_e
+ngx_stream_mtrojan_rules_match_domain(ngx_stream_mtrojan_rules_conf_t *rules,
     ngx_str_t *tag, ngx_str_t *host)
 {
-    return ngx_stream_trojan_route_rules_match_domain(
-        ngx_stream_trojan_rules_find(rules, tag), host);
+    return ngx_stream_mtrojan_route_rules_match_domain(
+        ngx_stream_mtrojan_rules_find(rules, tag), host);
 }
 
 
-ngx_stream_trojan_rule_match_e
-ngx_stream_trojan_rules_match_ip(ngx_stream_trojan_rules_conf_t *rules,
+ngx_stream_mtrojan_rule_match_e
+ngx_stream_mtrojan_rules_match_ip(ngx_stream_mtrojan_rules_conf_t *rules,
     ngx_str_t *tag, struct sockaddr *sa)
 {
-    return ngx_stream_trojan_route_rules_match_ip(
-        ngx_stream_trojan_rules_find(rules, tag), sa);
+    return ngx_stream_mtrojan_route_rules_match_ip(
+        ngx_stream_mtrojan_rules_find(rules, tag), sa);
 }
 
 
-ngx_stream_trojan_rule_match_e
-ngx_stream_trojan_route_rules_match_target(
-    ngx_stream_trojan_route_rules_t *group, ngx_stream_trojan_addr_t *target)
+ngx_stream_mtrojan_rule_match_e
+ngx_stream_mtrojan_route_rules_match_target(
+    ngx_stream_mtrojan_route_rules_t *group, ngx_stream_mtrojan_addr_t *target)
 {
     ngx_str_t                       host;
     ngx_sockaddr_t                  sockaddr;
 
     if (target == NULL) {
-        return NGX_STREAM_TROJAN_RULE_NOT_APPLICABLE;
+        return NGX_STREAM_MTROJAN_RULE_NOT_APPLICABLE;
     }
 
-    if (target->type == NGX_STREAM_TROJAN_ADDR_DOMAIN) {
+    if (target->type == NGX_STREAM_MTROJAN_ADDR_DOMAIN) {
         host.data = target->host;
         host.len = target->host_len;
 
         if (group == NULL || group->domains.nelts == 0) {
-            return NGX_STREAM_TROJAN_RULE_NO_MATCH;
+            return NGX_STREAM_MTROJAN_RULE_NO_MATCH;
         }
 
-        return ngx_stream_trojan_route_rules_match_domain(group, &host);
+        return ngx_stream_mtrojan_route_rules_match_domain(group, &host);
     }
 
-    if (ngx_stream_trojan_route_rules_target_to_sockaddr(target, &sockaddr)
+    if (ngx_stream_mtrojan_route_rules_target_to_sockaddr(target, &sockaddr)
         == NGX_OK)
     {
-        return ngx_stream_trojan_route_rules_match_ip(group,
+        return ngx_stream_mtrojan_route_rules_match_ip(group,
                                                       &sockaddr.sockaddr);
     }
 
-    return NGX_STREAM_TROJAN_RULE_NOT_APPLICABLE;
+    return NGX_STREAM_MTROJAN_RULE_NOT_APPLICABLE;
 }
 
 
 ngx_int_t
-ngx_stream_trojan_rules_compile(ngx_conf_t *cf,
-    ngx_stream_trojan_rules_conf_t *rules)
+ngx_stream_mtrojan_rules_compile(ngx_conf_t *cf,
+    ngx_stream_mtrojan_rules_conf_t *rules)
 {
     ngx_uint_t                       i;
-    ngx_stream_trojan_route_rules_t *group;
+    ngx_stream_mtrojan_route_rules_t *group;
 
     if (rules == NULL || rules->groups == NULL) {
         return NGX_OK;
@@ -502,7 +502,7 @@ ngx_stream_trojan_rules_compile(ngx_conf_t *cf,
     group = rules->groups->elts;
 
     for (i = 0; i < rules->groups->nelts; i++) {
-        if (ngx_stream_trojan_route_rules_compile(cf, &group[i]) != NGX_OK) {
+        if (ngx_stream_mtrojan_route_rules_compile(cf, &group[i]) != NGX_OK) {
             return NGX_ERROR;
         }
     }
@@ -512,31 +512,31 @@ ngx_stream_trojan_rules_compile(ngx_conf_t *cf,
 
 
 char *
-ngx_stream_trojan_route_rules_block(ngx_conf_t *cf, ngx_command_t *cmd,
+ngx_stream_mtrojan_route_rules_block(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
-    ngx_stream_trojan_rules_conf_t       *rules;
-    ngx_stream_trojan_route_rules_t      *group;
-    ngx_stream_trojan_rules_block_ctx_t   block;
+    ngx_stream_mtrojan_rules_conf_t       *rules;
+    ngx_stream_mtrojan_route_rules_t      *group;
+    ngx_stream_mtrojan_rules_block_ctx_t   block;
     ngx_str_t                            *value;
     ngx_conf_t                            save;
     char                                 *rv;
 
     value = cf->args->elts;
-    rules = ngx_stream_trojan_rules_get_conf(cf, cmd, conf);
+    rules = ngx_stream_mtrojan_rules_get_conf(cf, cmd, conf);
     if (rules == NULL) {
         return NGX_CONF_ERROR;
     }
 
     if (rules->groups == NULL) {
         rules->groups = ngx_array_create(
-            cf->pool, 2, sizeof(ngx_stream_trojan_route_rules_t));
+            cf->pool, 2, sizeof(ngx_stream_mtrojan_route_rules_t));
         if (rules->groups == NULL) {
             return NGX_CONF_ERROR;
         }
     }
 
-    if (ngx_stream_trojan_rules_tag_exists(rules->groups, &value[1])) {
+    if (ngx_stream_mtrojan_rules_tag_exists(rules->groups, &value[1])) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "duplicate route_rules tag \"%V\"", &value[1]);
         return NGX_CONF_ERROR;
@@ -551,14 +551,14 @@ ngx_stream_trojan_route_rules_block(ngx_conf_t *cf, ngx_command_t *cmd,
     group->tag = value[1];
 
     if (ngx_array_init(&group->domains, cf->pool, 4,
-                       sizeof(ngx_stream_trojan_domain_rule_t))
+                       sizeof(ngx_stream_mtrojan_domain_rule_t))
         != NGX_OK)
     {
         return NGX_CONF_ERROR;
     }
 
     if (ngx_array_init(&group->ips, cf->pool, 4,
-                       sizeof(ngx_stream_trojan_ip_rule_t))
+                       sizeof(ngx_stream_mtrojan_ip_rule_t))
         != NGX_OK)
     {
         return NGX_CONF_ERROR;
@@ -567,7 +567,7 @@ ngx_stream_trojan_route_rules_block(ngx_conf_t *cf, ngx_command_t *cmd,
     block.group = group;
 
     save = *cf;
-    cf->handler = ngx_stream_trojan_rules_block;
+    cf->handler = ngx_stream_mtrojan_rules_block;
     cf->handler_conf = &block;
 
     rv = ngx_conf_parse(cf, NULL);
@@ -580,10 +580,10 @@ ngx_stream_trojan_route_rules_block(ngx_conf_t *cf, ngx_command_t *cmd,
 
 
 static ngx_int_t
-ngx_stream_trojan_rules_tag_exists(ngx_array_t *groups, ngx_str_t *tag)
+ngx_stream_mtrojan_rules_tag_exists(ngx_array_t *groups, ngx_str_t *tag)
 {
     ngx_uint_t                         i;
-    ngx_stream_trojan_route_rules_t   *group;
+    ngx_stream_mtrojan_route_rules_t   *group;
 
     group = groups->elts;
 
@@ -599,11 +599,11 @@ ngx_stream_trojan_rules_tag_exists(ngx_array_t *groups, ngx_str_t *tag)
 }
 
 
-static ngx_stream_trojan_rules_conf_t *
-ngx_stream_trojan_rules_get_conf(ngx_conf_t *cf, ngx_command_t *cmd,
+static ngx_stream_mtrojan_rules_conf_t *
+ngx_stream_mtrojan_rules_get_conf(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
-    ngx_stream_trojan_main_conf_t  *tmcf;
+    ngx_stream_mtrojan_main_conf_t  *tmcf;
 
     if (cf->cmd_type == NGX_STREAM_MAIN_CONF) {
         tmcf = conf;
@@ -611,7 +611,7 @@ ngx_stream_trojan_rules_get_conf(ngx_conf_t *cf, ngx_command_t *cmd,
     }
 
     if (cf->cmd_type == NGX_STREAM_SRV_CONF) {
-        return (ngx_stream_trojan_rules_conf_t *)
+        return (ngx_stream_mtrojan_rules_conf_t *)
                ((u_char *) conf + cmd->offset);
     }
 
@@ -620,9 +620,9 @@ ngx_stream_trojan_rules_get_conf(ngx_conf_t *cf, ngx_command_t *cmd,
 
 
 static char *
-ngx_stream_trojan_rules_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+ngx_stream_mtrojan_rules_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_stream_trojan_rules_block_ctx_t  *block = conf;
+    ngx_stream_mtrojan_rules_block_ctx_t  *block = conf;
     ngx_str_t                            *value;
     ngx_uint_t                            i;
     char                                 *rv;
@@ -647,7 +647,7 @@ ngx_stream_trojan_rules_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
 
         for (i = 1; i < cf->args->nelts; i++) {
-            rv = ngx_stream_trojan_rules_add_domain(cf, block->group,
+            rv = ngx_stream_mtrojan_rules_add_domain(cf, block->group,
                                                     &value[i]);
             if (rv != NGX_CONF_OK) {
                 return rv;
@@ -665,7 +665,7 @@ ngx_stream_trojan_rules_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
 
         for (i = 1; i < cf->args->nelts; i++) {
-            rv = ngx_stream_trojan_rules_add_ip(cf, block->group, &value[i]);
+            rv = ngx_stream_mtrojan_rules_add_ip(cf, block->group, &value[i]);
             if (rv != NGX_CONF_OK) {
                 return rv;
             }
@@ -683,25 +683,25 @@ ngx_stream_trojan_rules_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 
 static char *
-ngx_stream_trojan_rules_add_domain(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group, ngx_str_t *value)
+ngx_stream_mtrojan_rules_add_domain(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group, ngx_str_t *value)
 {
-    ngx_stream_trojan_domain_rule_t       *rule;
-    ngx_stream_trojan_rule_domain_type_e   type;
+    ngx_stream_mtrojan_domain_rule_t       *rule;
+    ngx_stream_mtrojan_rule_domain_type_e   type;
 #if (NGX_PCRE)
     ngx_regex_compile_t                    rc;
     u_char                                 errstr[NGX_MAX_CONF_ERRSTR];
     ngx_str_t                              pattern;
 #endif
 
-    if (ngx_stream_trojan_rule_reserved_value(value)) {
+    if (ngx_stream_mtrojan_rule_reserved_value(value)) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "\"include\" is not allowed inside domain values; "
                            "missing \";\" before include?");
         return NGX_CONF_ERROR;
     }
 
-    if (ngx_stream_trojan_rule_domain_type(value, &type) != NGX_OK) {
+    if (ngx_stream_mtrojan_rule_domain_type(value, &type) != NGX_OK) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "invalid domain rule \"%V\"", value);
         return NGX_CONF_ERROR;
@@ -716,7 +716,7 @@ ngx_stream_trojan_rules_add_domain(ngx_conf_t *cf,
     rule->type = type;
     rule->value = *value;
 
-    if (type == NGX_STREAM_TROJAN_RULE_DOMAIN_REGEX) {
+    if (type == NGX_STREAM_MTROJAN_RULE_DOMAIN_REGEX) {
 #if (NGX_PCRE)
         pattern.data = value->data + 1;
         pattern.len = value->len - 1;
@@ -748,12 +748,12 @@ ngx_stream_trojan_rules_add_domain(ngx_conf_t *cf,
 
 
 static char *
-ngx_stream_trojan_rules_add_ip(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group, ngx_str_t *value)
+ngx_stream_mtrojan_rules_add_ip(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group, ngx_str_t *value)
 {
-    ngx_stream_trojan_ip_rule_t  *rule;
+    ngx_stream_mtrojan_ip_rule_t  *rule;
 
-    if (ngx_stream_trojan_rule_reserved_value(value)) {
+    if (ngx_stream_mtrojan_rule_reserved_value(value)) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "\"include\" is not allowed inside ip values; "
                            "missing \";\" before include?");
@@ -778,18 +778,18 @@ ngx_stream_trojan_rules_add_ip(ngx_conf_t *cf,
 
 
 static ngx_int_t
-ngx_stream_trojan_route_rules_compile(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group)
+ngx_stream_mtrojan_route_rules_compile(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group)
 {
     if (group->compiled) {
         return NGX_OK;
     }
 
-    if (ngx_stream_trojan_route_rules_compile_domains(cf, group) != NGX_OK) {
+    if (ngx_stream_mtrojan_route_rules_compile_domains(cf, group) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    if (ngx_stream_trojan_route_rules_compile_ips(cf, group) != NGX_OK) {
+    if (ngx_stream_mtrojan_route_rules_compile_ips(cf, group) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -800,13 +800,13 @@ ngx_stream_trojan_route_rules_compile(ngx_conf_t *cf,
 
 
 static ngx_int_t
-ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group)
+ngx_stream_mtrojan_route_rules_compile_domains(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group)
 {
     ngx_uint_t                        i;
     ngx_pool_t                       *temp_pool;
     ngx_array_t                      *exact, *suffix;
-    ngx_stream_trojan_domain_rule_t  *rule, *regex_rule;
+    ngx_stream_mtrojan_domain_rule_t  *rule, *regex_rule;
 
     if (group->domains.nelts == 0) {
         return NGX_OK;
@@ -818,14 +818,14 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
     }
 
     exact = ngx_array_create(temp_pool, group->domains.nelts,
-                             sizeof(ngx_stream_trojan_domain_build_entry_t));
+                             sizeof(ngx_stream_mtrojan_domain_build_entry_t));
     if (exact == NULL) {
         ngx_destroy_pool(temp_pool);
         return NGX_ERROR;
     }
 
     suffix = ngx_array_create(temp_pool, group->domains.nelts,
-                              sizeof(ngx_stream_trojan_domain_build_entry_t));
+                              sizeof(ngx_stream_mtrojan_domain_build_entry_t));
     if (suffix == NULL) {
         ngx_destroy_pool(temp_pool);
         return NGX_ERROR;
@@ -836,8 +836,8 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
     for (i = 0; i < group->domains.nelts; i++) {
         switch (rule[i].type) {
 
-        case NGX_STREAM_TROJAN_RULE_DOMAIN_EXACT:
-            if (ngx_stream_trojan_route_rules_add_domain_entry(
+        case NGX_STREAM_MTROJAN_RULE_DOMAIN_EXACT:
+            if (ngx_stream_mtrojan_route_rules_add_domain_entry(
                 cf, temp_pool, exact, rule[i].value.data, rule[i].value.len, 0)
                 != NGX_OK)
             {
@@ -847,11 +847,11 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
 
             break;
 
-        case NGX_STREAM_TROJAN_RULE_DOMAIN_SUFFIX:
-            if (ngx_stream_trojan_route_rules_add_domain_entry(
+        case NGX_STREAM_MTROJAN_RULE_DOMAIN_SUFFIX:
+            if (ngx_stream_mtrojan_route_rules_add_domain_entry(
                 cf, temp_pool, suffix, rule[i].value.data + 1,
                 rule[i].value.len - 1,
-                NGX_STREAM_TROJAN_DOMAIN_SUFFIX_INCLUDE_ROOT)
+                NGX_STREAM_MTROJAN_DOMAIN_SUFFIX_INCLUDE_ROOT)
                 != NGX_OK)
             {
                 ngx_destroy_pool(temp_pool);
@@ -860,8 +860,8 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
 
             break;
 
-        case NGX_STREAM_TROJAN_RULE_DOMAIN_WILDCARD:
-            if (ngx_stream_trojan_route_rules_add_domain_entry(
+        case NGX_STREAM_MTROJAN_RULE_DOMAIN_WILDCARD:
+            if (ngx_stream_mtrojan_route_rules_add_domain_entry(
                 cf, temp_pool, suffix, rule[i].value.data + 2,
                 rule[i].value.len - 2, 0)
                 != NGX_OK)
@@ -872,10 +872,10 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
 
             break;
 
-        case NGX_STREAM_TROJAN_RULE_DOMAIN_REGEX:
+        case NGX_STREAM_MTROJAN_RULE_DOMAIN_REGEX:
             if (group->regex_domains == NULL) {
                 group->regex_domains = ngx_array_create(
-                    cf->pool, 2, sizeof(ngx_stream_trojan_domain_rule_t));
+                    cf->pool, 2, sizeof(ngx_stream_mtrojan_domain_rule_t));
                 if (group->regex_domains == NULL) {
                     ngx_destroy_pool(temp_pool);
                     return NGX_ERROR;
@@ -893,7 +893,7 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
         }
     }
 
-    if (ngx_stream_trojan_route_rules_build_domain_mph(cf, temp_pool, exact,
+    if (ngx_stream_mtrojan_route_rules_build_domain_mph(cf, temp_pool, exact,
                                                        &group->exact)
         != NGX_OK)
     {
@@ -901,7 +901,7 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_trojan_route_rules_build_domain_mph(cf, temp_pool, suffix,
+    if (ngx_stream_mtrojan_route_rules_build_domain_mph(cf, temp_pool, suffix,
                                                        &group->suffix)
         != NGX_OK)
     {
@@ -916,12 +916,12 @@ ngx_stream_trojan_route_rules_compile_domains(ngx_conf_t *cf,
 
 
 static ngx_int_t
-ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
-    ngx_stream_trojan_route_rules_t *group)
+ngx_stream_mtrojan_route_rules_compile_ips(ngx_conf_t *cf,
+    ngx_stream_mtrojan_route_rules_t *group)
 {
     ngx_uint_t                              i, n, prefix;
     ngx_uint_t                              counts4[33], cursors4[33];
-    ngx_stream_trojan_ip_rule_t           *rule;
+    ngx_stream_mtrojan_ip_rule_t           *rule;
     uint32_t                                mask, addr;
 #if (NGX_HAVE_INET6)
     ngx_uint_t                              counts6[129], cursors6[129];
@@ -943,13 +943,13 @@ ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
 
     for (i = 0; i < group->ips.nelts; i++) {
         if (rule[i].cidr.family == AF_INET) {
-            prefix = ngx_stream_trojan_route_rules_ipv4_prefix(
+            prefix = ngx_stream_mtrojan_route_rules_ipv4_prefix(
                 ntohl(rule[i].cidr.u.in.mask));
             counts4[prefix]++;
 
 #if (NGX_HAVE_INET6)
         } else if (rule[i].cidr.family == AF_INET6) {
-            prefix = ngx_stream_trojan_route_rules_ipv6_prefix(
+            prefix = ngx_stream_mtrojan_route_rules_ipv6_prefix(
                 rule[i].cidr.u.in6.mask.s6_addr);
             counts6[prefix]++;
 #endif
@@ -962,7 +962,7 @@ ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
         }
 
         group->ipv4[i].elts = ngx_pnalloc(
-            cf->pool, counts4[i] * sizeof(ngx_stream_trojan_ipv4_prefix_t));
+            cf->pool, counts4[i] * sizeof(ngx_stream_mtrojan_ipv4_prefix_t));
         if (group->ipv4[i].elts == NULL) {
             return NGX_ERROR;
         }
@@ -977,7 +977,7 @@ ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
         }
 
         group->ipv6[i].elts = ngx_pnalloc(
-            cf->pool, counts6[i] * sizeof(ngx_stream_trojan_ipv6_prefix_t));
+            cf->pool, counts6[i] * sizeof(ngx_stream_mtrojan_ipv6_prefix_t));
         if (group->ipv6[i].elts == NULL) {
             return NGX_ERROR;
         }
@@ -988,17 +988,17 @@ ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
 
     for (i = 0; i < group->ips.nelts; i++) {
         if (rule[i].cidr.family == AF_INET) {
-            prefix = ngx_stream_trojan_route_rules_ipv4_prefix(
+            prefix = ngx_stream_mtrojan_route_rules_ipv4_prefix(
                 ntohl(rule[i].cidr.u.in.mask));
-            mask = ngx_stream_trojan_route_rules_ipv4_mask(prefix);
+            mask = ngx_stream_mtrojan_route_rules_ipv4_mask(prefix);
             addr = ntohl(rule[i].cidr.u.in.addr) & mask;
             group->ipv4[prefix].elts[cursors4[prefix]++].addr = addr;
 
 #if (NGX_HAVE_INET6)
         } else if (rule[i].cidr.family == AF_INET6) {
-            prefix = ngx_stream_trojan_route_rules_ipv6_prefix(
+            prefix = ngx_stream_mtrojan_route_rules_ipv6_prefix(
                 rule[i].cidr.u.in6.mask.s6_addr);
-            ngx_stream_trojan_route_rules_ipv6_mask(
+            ngx_stream_mtrojan_route_rules_ipv6_mask(
                 group->ipv6[prefix].elts[cursors6[prefix]++].addr,
                 rule[i].cidr.u.in6.addr.s6_addr, prefix);
 #endif
@@ -1011,8 +1011,8 @@ ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
         }
 
         ngx_qsort(group->ipv4[i].elts, (size_t) group->ipv4[i].nelts,
-                  sizeof(ngx_stream_trojan_ipv4_prefix_t),
-                  ngx_stream_trojan_cmp_ipv4_prefix);
+                  sizeof(ngx_stream_mtrojan_ipv4_prefix_t),
+                  ngx_stream_mtrojan_cmp_ipv4_prefix);
 
         n = 0;
         for (prefix = 0; prefix < group->ipv4[i].nelts; prefix++) {
@@ -1034,8 +1034,8 @@ ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
         }
 
         ngx_qsort(group->ipv6[i].elts, (size_t) group->ipv6[i].nelts,
-                  sizeof(ngx_stream_trojan_ipv6_prefix_t),
-                  ngx_stream_trojan_cmp_ipv6_prefix);
+                  sizeof(ngx_stream_mtrojan_ipv6_prefix_t),
+                  ngx_stream_mtrojan_cmp_ipv6_prefix);
 
         n = 0;
         for (prefix = 0; prefix < group->ipv6[i].nelts; prefix++) {
@@ -1057,12 +1057,12 @@ ngx_stream_trojan_route_rules_compile_ips(ngx_conf_t *cf,
 
 
 static ngx_int_t
-ngx_stream_trojan_route_rules_add_domain_entry(ngx_conf_t *cf,
+ngx_stream_mtrojan_route_rules_add_domain_entry(ngx_conf_t *cf,
     ngx_pool_t *pool, ngx_array_t *entries, u_char *data, size_t len,
     uint8_t flags)
 {
     size_t                                      i;
-    ngx_stream_trojan_domain_build_entry_t    *entry;
+    ngx_stream_mtrojan_domain_build_entry_t    *entry;
 
     if (len == 0 || len > 255) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -1087,16 +1087,16 @@ ngx_stream_trojan_route_rules_add_domain_entry(ngx_conf_t *cf,
         entry->key.data[i] = ngx_tolower(data[i]);
     }
 
-    entry->hash = ngx_stream_trojan_route_rules_hash(entry->key.data, len, 0);
+    entry->hash = ngx_stream_mtrojan_route_rules_hash(entry->key.data, len, 0);
 
     return NGX_OK;
 }
 
 
 static ngx_int_t
-ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
+ngx_stream_mtrojan_route_rules_build_domain_mph(ngx_conf_t *cf,
     ngx_pool_t *temp_pool, ngx_array_t *entries,
-    ngx_stream_trojan_domain_mph_t *mph)
+    ngx_stream_mtrojan_domain_mph_t *mph)
 {
     ngx_uint_t                                  i, n, size, limit, bucket;
     ngx_uint_t                                  buckets_n, b, seed, pos, j;
@@ -1105,10 +1105,10 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
     ngx_uint_t                                 *bucket_fill, *bucket_items;
     ngx_uint_t                                 *used, *positions, *probe;
     ngx_uint_t                                  ok, duplicate;
-    ngx_stream_trojan_mph_bucket_sort_t       *sorted;
-    ngx_stream_trojan_domain_build_entry_t    *entry, *unique, *e;
-    ngx_stream_trojan_mph_bucket_t            *buckets;
-    ngx_stream_trojan_mph_slot_t              *slot;
+    ngx_stream_mtrojan_mph_bucket_sort_t       *sorted;
+    ngx_stream_mtrojan_domain_build_entry_t    *entry, *unique, *e;
+    ngx_stream_mtrojan_mph_bucket_t            *buckets;
+    ngx_stream_mtrojan_mph_slot_t              *slot;
 
     if (entries->nelts == 0) {
         return NGX_OK;
@@ -1116,8 +1116,8 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
 
     entry = entries->elts;
     ngx_qsort(entry, (size_t) entries->nelts,
-              sizeof(ngx_stream_trojan_domain_build_entry_t),
-              ngx_stream_trojan_cmp_domain_entries);
+              sizeof(ngx_stream_mtrojan_domain_build_entry_t),
+              ngx_stream_mtrojan_cmp_domain_entries);
 
     unique = entry;
     n = 0;
@@ -1140,14 +1140,14 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
         return NGX_OK;
     }
 
-    buckets_n = ngx_stream_trojan_route_rules_next_power(n / 4 + 1);
+    buckets_n = ngx_stream_mtrojan_route_rules_next_power(n / 4 + 1);
 
     bucket_counts = ngx_pcalloc(temp_pool, buckets_n * sizeof(ngx_uint_t));
     bucket_offsets = ngx_pcalloc(temp_pool, buckets_n * sizeof(ngx_uint_t));
     bucket_fill = ngx_pcalloc(temp_pool, buckets_n * sizeof(ngx_uint_t));
     sorted = ngx_pnalloc(temp_pool,
                          buckets_n
-                         * sizeof(ngx_stream_trojan_mph_bucket_sort_t));
+                         * sizeof(ngx_stream_mtrojan_mph_bucket_sort_t));
     bucket_items = ngx_pnalloc(temp_pool, n * sizeof(ngx_uint_t));
     positions = ngx_pnalloc(temp_pool, n * sizeof(ngx_uint_t));
     probe = ngx_pnalloc(temp_pool, n * sizeof(ngx_uint_t));
@@ -1177,8 +1177,8 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
     }
 
     ngx_qsort(sorted, (size_t) buckets_n,
-              sizeof(ngx_stream_trojan_mph_bucket_sort_t),
-              ngx_stream_trojan_cmp_mph_buckets);
+              sizeof(ngx_stream_mtrojan_mph_bucket_sort_t),
+              ngx_stream_mtrojan_cmp_mph_buckets);
 
     limit = n * 2 + 1;
 
@@ -1186,7 +1186,7 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
         used = ngx_pcalloc(temp_pool, size * sizeof(ngx_uint_t));
         buckets = ngx_pcalloc(temp_pool,
                               buckets_n
-                              * sizeof(ngx_stream_trojan_mph_bucket_t));
+                              * sizeof(ngx_stream_mtrojan_mph_bucket_t));
 
         if (used == NULL || buckets == NULL) {
             return NGX_ERROR;
@@ -1205,7 +1205,7 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
 
                 for (i = 0; i < count; i++) {
                     e = &unique[bucket_items[bucket_offsets[bucket] + i]];
-                    pos = ngx_stream_trojan_route_rules_hash(
+                    pos = ngx_stream_mtrojan_route_rules_hash(
                               e->key.data, e->key.len, seed)
                           % size;
 
@@ -1243,7 +1243,7 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
 
             for (i = 0; i < count; i++) {
                 e = &unique[bucket_items[bucket_offsets[bucket] + i]];
-                pos = ngx_stream_trojan_route_rules_hash(
+                pos = ngx_stream_mtrojan_route_rules_hash(
                           e->key.data, e->key.len, seed)
                       % size;
                 used[pos] = 1;
@@ -1257,10 +1257,10 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
 
         mph->slots = ngx_pcalloc(cf->pool,
                                  size
-                                 * sizeof(ngx_stream_trojan_mph_slot_t));
+                                 * sizeof(ngx_stream_mtrojan_mph_slot_t));
         mph->buckets = ngx_pnalloc(cf->pool,
                                    buckets_n
-                                   * sizeof(ngx_stream_trojan_mph_bucket_t));
+                                   * sizeof(ngx_stream_mtrojan_mph_bucket_t));
         if (mph->slots == NULL || mph->buckets == NULL) {
             return NGX_ERROR;
         }
@@ -1276,7 +1276,7 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
         }
 
         ngx_memcpy(mph->buckets, buckets,
-                   buckets_n * sizeof(ngx_stream_trojan_mph_bucket_t));
+                   buckets_n * sizeof(ngx_stream_mtrojan_mph_bucket_t));
 
         offset = 0;
         for (i = 0; i < n; i++) {
@@ -1304,21 +1304,21 @@ ngx_stream_trojan_route_rules_build_domain_mph(ngx_conf_t *cf,
 }
 
 
-static ngx_stream_trojan_mph_slot_t *
-ngx_stream_trojan_route_rules_domain_mph_find(
-    ngx_stream_trojan_domain_mph_t *mph, u_char *data, size_t len)
+static ngx_stream_mtrojan_mph_slot_t *
+ngx_stream_mtrojan_route_rules_domain_mph_find(
+    ngx_stream_mtrojan_domain_mph_t *mph, u_char *data, size_t len)
 {
     uint32_t                          hash;
     ngx_uint_t                        bucket, pos;
-    ngx_stream_trojan_mph_slot_t     *slot;
+    ngx_stream_mtrojan_mph_slot_t     *slot;
 
     if (mph == NULL || mph->size == 0 || len == 0 || len > 255) {
         return NULL;
     }
 
-    hash = ngx_stream_trojan_route_rules_hash(data, len, 0);
+    hash = ngx_stream_mtrojan_route_rules_hash(data, len, 0);
     bucket = hash & (mph->buckets_n - 1);
-    pos = ngx_stream_trojan_route_rules_hash(data, len,
+    pos = ngx_stream_mtrojan_route_rules_hash(data, len,
                                              mph->buckets[bucket].seed)
           % mph->size;
     slot = &mph->slots[pos];
@@ -1336,7 +1336,7 @@ ngx_stream_trojan_route_rules_domain_mph_find(
 
 
 static uint32_t
-ngx_stream_trojan_route_rules_hash(u_char *data, size_t len, uint32_t seed)
+ngx_stream_mtrojan_route_rules_hash(u_char *data, size_t len, uint32_t seed)
 {
     size_t    i;
     uint32_t  hash;
@@ -1359,7 +1359,7 @@ ngx_stream_trojan_route_rules_hash(u_char *data, size_t len, uint32_t seed)
 
 
 static ngx_uint_t
-ngx_stream_trojan_route_rules_next_power(ngx_uint_t n)
+ngx_stream_mtrojan_route_rules_next_power(ngx_uint_t n)
 {
     ngx_uint_t  p;
 
@@ -1374,7 +1374,7 @@ ngx_stream_trojan_route_rules_next_power(ngx_uint_t n)
 
 
 static ngx_uint_t
-ngx_stream_trojan_route_rules_ipv4_prefix(uint32_t mask)
+ngx_stream_mtrojan_route_rules_ipv4_prefix(uint32_t mask)
 {
     ngx_uint_t  n;
 
@@ -1390,7 +1390,7 @@ ngx_stream_trojan_route_rules_ipv4_prefix(uint32_t mask)
 
 
 static uint32_t
-ngx_stream_trojan_route_rules_ipv4_mask(ngx_uint_t prefix)
+ngx_stream_mtrojan_route_rules_ipv4_mask(ngx_uint_t prefix)
 {
     if (prefix == 0) {
         return 0;
@@ -1402,7 +1402,7 @@ ngx_stream_trojan_route_rules_ipv4_mask(ngx_uint_t prefix)
 
 #if (NGX_HAVE_INET6)
 static ngx_uint_t
-ngx_stream_trojan_route_rules_ipv6_prefix(u_char *mask)
+ngx_stream_mtrojan_route_rules_ipv6_prefix(u_char *mask)
 {
     ngx_uint_t  i, n;
     u_char      bit;
@@ -1424,7 +1424,7 @@ ngx_stream_trojan_route_rules_ipv6_prefix(u_char *mask)
 
 
 static void
-ngx_stream_trojan_route_rules_ipv6_mask(u_char *dst, u_char *src,
+ngx_stream_mtrojan_route_rules_ipv6_mask(u_char *dst, u_char *src,
     ngx_uint_t prefix)
 {
     ngx_uint_t  i, bits;
@@ -1450,14 +1450,14 @@ ngx_stream_trojan_route_rules_ipv6_mask(u_char *dst, u_char *src,
 
 
 static int ngx_libc_cdecl
-ngx_stream_trojan_cmp_domain_entries(const void *one, const void *two)
+ngx_stream_mtrojan_cmp_domain_entries(const void *one, const void *two)
 {
-    ngx_stream_trojan_domain_build_entry_t  *first, *second;
+    ngx_stream_mtrojan_domain_build_entry_t  *first, *second;
     size_t                                   len;
     int                                      rc;
 
-    first = (ngx_stream_trojan_domain_build_entry_t *) one;
-    second = (ngx_stream_trojan_domain_build_entry_t *) two;
+    first = (ngx_stream_mtrojan_domain_build_entry_t *) one;
+    second = (ngx_stream_mtrojan_domain_build_entry_t *) two;
 
     len = ngx_min(first->key.len, second->key.len);
     rc = ngx_memcmp(first->key.data, second->key.data, len);
@@ -1475,12 +1475,12 @@ ngx_stream_trojan_cmp_domain_entries(const void *one, const void *two)
 
 
 static int ngx_libc_cdecl
-ngx_stream_trojan_cmp_mph_buckets(const void *one, const void *two)
+ngx_stream_mtrojan_cmp_mph_buckets(const void *one, const void *two)
 {
-    ngx_stream_trojan_mph_bucket_sort_t  *first, *second;
+    ngx_stream_mtrojan_mph_bucket_sort_t  *first, *second;
 
-    first = (ngx_stream_trojan_mph_bucket_sort_t *) one;
-    second = (ngx_stream_trojan_mph_bucket_sort_t *) two;
+    first = (ngx_stream_mtrojan_mph_bucket_sort_t *) one;
+    second = (ngx_stream_mtrojan_mph_bucket_sort_t *) two;
 
     if (first->count == second->count) {
         return 0;
@@ -1491,12 +1491,12 @@ ngx_stream_trojan_cmp_mph_buckets(const void *one, const void *two)
 
 
 static int ngx_libc_cdecl
-ngx_stream_trojan_cmp_ipv4_prefix(const void *one, const void *two)
+ngx_stream_mtrojan_cmp_ipv4_prefix(const void *one, const void *two)
 {
-    ngx_stream_trojan_ipv4_prefix_t  *first, *second;
+    ngx_stream_mtrojan_ipv4_prefix_t  *first, *second;
 
-    first = (ngx_stream_trojan_ipv4_prefix_t *) one;
-    second = (ngx_stream_trojan_ipv4_prefix_t *) two;
+    first = (ngx_stream_mtrojan_ipv4_prefix_t *) one;
+    second = (ngx_stream_mtrojan_ipv4_prefix_t *) two;
 
     if (first->addr == second->addr) {
         return 0;
@@ -1508,12 +1508,12 @@ ngx_stream_trojan_cmp_ipv4_prefix(const void *one, const void *two)
 
 #if (NGX_HAVE_INET6)
 static int ngx_libc_cdecl
-ngx_stream_trojan_cmp_ipv6_prefix(const void *one, const void *two)
+ngx_stream_mtrojan_cmp_ipv6_prefix(const void *one, const void *two)
 {
-    ngx_stream_trojan_ipv6_prefix_t  *first, *second;
+    ngx_stream_mtrojan_ipv6_prefix_t  *first, *second;
 
-    first = (ngx_stream_trojan_ipv6_prefix_t *) one;
-    second = (ngx_stream_trojan_ipv6_prefix_t *) two;
+    first = (ngx_stream_mtrojan_ipv6_prefix_t *) one;
+    second = (ngx_stream_mtrojan_ipv6_prefix_t *) two;
 
     return ngx_memcmp(first->addr, second->addr, 16);
 }
@@ -1521,8 +1521,8 @@ ngx_stream_trojan_cmp_ipv6_prefix(const void *one, const void *two)
 
 
 static ngx_uint_t
-ngx_stream_trojan_route_rules_ipv4_find(
-    ngx_stream_trojan_ipv4_prefix_bucket_t *bucket, uint32_t addr)
+ngx_stream_mtrojan_route_rules_ipv4_find(
+    ngx_stream_mtrojan_ipv4_prefix_bucket_t *bucket, uint32_t addr)
 {
     ngx_uint_t  left, right, mid;
 
@@ -1549,8 +1549,8 @@ ngx_stream_trojan_route_rules_ipv4_find(
 
 #if (NGX_HAVE_INET6)
 static ngx_uint_t
-ngx_stream_trojan_route_rules_ipv6_find(
-    ngx_stream_trojan_ipv6_prefix_bucket_t *bucket, u_char *addr)
+ngx_stream_mtrojan_route_rules_ipv6_find(
+    ngx_stream_mtrojan_ipv6_prefix_bucket_t *bucket, u_char *addr)
 {
     ngx_uint_t  left, right, mid;
     int         rc;
@@ -1579,8 +1579,8 @@ ngx_stream_trojan_route_rules_ipv6_find(
 
 
 static ngx_int_t
-ngx_stream_trojan_route_rules_target_to_sockaddr(
-    ngx_stream_trojan_addr_t *target, ngx_sockaddr_t *sockaddr)
+ngx_stream_mtrojan_route_rules_target_to_sockaddr(
+    ngx_stream_mtrojan_addr_t *target, ngx_sockaddr_t *sockaddr)
 {
     in_addr_t             addr;
     struct sockaddr_in   *sin;
@@ -1596,7 +1596,7 @@ ngx_stream_trojan_route_rules_target_to_sockaddr(
 
     switch (target->type) {
 
-    case NGX_STREAM_TROJAN_ADDR_IPV4:
+    case NGX_STREAM_MTROJAN_ADDR_IPV4:
         if (target->host_len != 4) {
             return NGX_ERROR;
         }
@@ -1607,7 +1607,7 @@ ngx_stream_trojan_route_rules_target_to_sockaddr(
         ngx_memcpy(&sin->sin_addr, target->host, 4);
         return NGX_OK;
 
-    case NGX_STREAM_TROJAN_ADDR_DOMAIN:
+    case NGX_STREAM_MTROJAN_ADDR_DOMAIN:
         addr = ngx_inet_addr(target->host, target->host_len);
         if (addr != INADDR_NONE) {
             sin = &sockaddr->sockaddr_in;
@@ -1632,7 +1632,7 @@ ngx_stream_trojan_route_rules_target_to_sockaddr(
         return NGX_DECLINED;
 
 #if (NGX_HAVE_INET6)
-    case NGX_STREAM_TROJAN_ADDR_IPV6:
+    case NGX_STREAM_MTROJAN_ADDR_IPV6:
         if (target->host_len != 16) {
             return NGX_ERROR;
         }
