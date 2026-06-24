@@ -4,6 +4,7 @@ if test -n "$ngx_module_link"; then
     ngx_module_type=STREAM
     ngx_module_name=ngx_stream_mtrojan_module
     ngx_module_srcs="$ngx_addon_dir/ngx_stream_mtrojan_module.c \
+                     $ngx_addon_dir/ngx_stream_mtrojan_inbound.c \
                      $ngx_addon_dir/ngx_stream_mtrojan_protocol.c \
                      $ngx_addon_dir/ngx_stream_mtrojan_socks5_protocol.c \
                      $ngx_addon_dir/ngx_stream_mtrojan_http_proxy_protocol.c \
@@ -14,6 +15,7 @@ else
     STREAM_MODULES="$STREAM_MODULES ngx_stream_mtrojan_module"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
                     $ngx_addon_dir/ngx_stream_mtrojan_module.c \
+                    $ngx_addon_dir/ngx_stream_mtrojan_inbound.c \
                     $ngx_addon_dir/ngx_stream_mtrojan_protocol.c \
                     $ngx_addon_dir/ngx_stream_mtrojan_socks5_protocol.c \
                     $ngx_addon_dir/ngx_stream_mtrojan_http_proxy_protocol.c \
