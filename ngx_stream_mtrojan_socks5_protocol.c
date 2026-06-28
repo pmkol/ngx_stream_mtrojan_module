@@ -1,4 +1,5 @@
 #include "ngx_stream_mtrojan_socks5_protocol.h"
+#include "ngx_stream_mtrojan_trojan.h"
 
 #include <string.h>
 
@@ -297,7 +298,7 @@ ngx_stream_mtrojan_socks5_parse_request(const uint8_t *buf, size_t len,
     }
 
     *command = buf[1];
-    return ngx_stream_mtrojan_parse_addr(buf + 3, needed - 3, addr);
+    return ngx_stream_trojan_parse_addr(buf + 3, needed - 3, addr);
 }
 
 
@@ -408,7 +409,7 @@ ngx_stream_mtrojan_socks5_parse_response(const uint8_t *buf, size_t len,
         return -1;
     }
 
-    return ngx_stream_mtrojan_parse_addr(buf + 3, needed - 3, addr);
+    return ngx_stream_trojan_parse_addr(buf + 3, needed - 3, addr);
 }
 
 
@@ -486,7 +487,7 @@ ngx_stream_mtrojan_socks5_parse_udp_packet(const uint8_t *buf, size_t len,
         return -1;
     }
 
-    if (ngx_stream_mtrojan_parse_addr(buf + 3, len - 3, &frame->addr) != 0) {
+    if (ngx_stream_trojan_parse_addr(buf + 3, len - 3, &frame->addr) != 0) {
         return -1;
     }
 

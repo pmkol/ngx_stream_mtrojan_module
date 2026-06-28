@@ -8,6 +8,7 @@ if test -n "$ngx_module_link"; then
                      $ngx_addon_dir/ngx_stream_mtrojan_protocol.c \
                      $ngx_addon_dir/ngx_stream_mtrojan_socks5_protocol.c \
                      $ngx_addon_dir/ngx_stream_mtrojan_http_proxy_protocol.c \
+                     $ngx_addon_dir/ngx_stream_mtrojan_trojan.c \
                      $ngx_addon_dir/ngx_stream_mtrojan_rules.c"
 
     . auto/module
@@ -19,5 +20,6 @@ else
                     $ngx_addon_dir/ngx_stream_mtrojan_protocol.c \
                     $ngx_addon_dir/ngx_stream_mtrojan_socks5_protocol.c \
                     $ngx_addon_dir/ngx_stream_mtrojan_http_proxy_protocol.c \
+                    $ngx_addon_dir/ngx_stream_mtrojan_trojan.c \
                     $ngx_addon_dir/ngx_stream_mtrojan_rules.c"
 fi

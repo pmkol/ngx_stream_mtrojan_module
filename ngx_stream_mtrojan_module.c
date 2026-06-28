@@ -13,6 +13,7 @@
 #include "ngx_stream_mtrojan_relay.h"
 #include "ngx_stream_mtrojan_rules.h"
 #include "ngx_stream_mtrojan_socks5_protocol.h"
+#include "ngx_stream_mtrojan_trojan.h"
 
 
 #define NGX_STREAM_MTROJAN_DEFAULT_BUFFER_SIZE 32768
@@ -100,7 +101,7 @@ typedef enum {
 
 
 typedef struct {
-    u_char data[NGX_STREAM_MTROJAN_KEY_LEN];
+    u_char data[NGX_STREAM_TROJAN_KEY_LEN];
 } ngx_stream_mtrojan_key_t;
 
 
@@ -295,7 +296,7 @@ struct ngx_stream_mtrojan_ctx_s {
     ngx_stream_mtrojan_peer_e    peer_kind;
     ngx_stream_mtrojan_outbound_t *outbound;
 
-    u_char                      prefix[NGX_STREAM_MTROJAN_PREFIX_LEN];
+    u_char                      prefix[NGX_STREAM_TROJAN_PREFIX_LEN];
     size_t                      prefix_len;
 
     u_char                      request[1 + NGX_STREAM_MTROJAN_MAX_ADDR_LEN + 2];
@@ -950,7 +951,7 @@ ngx_stream_mtrojan_key_valid(ngx_stream_mtrojan_srv_conf_t *tscf, u_char *key)
     keys = tscf->keys->elts;
 
     for (i = 0; i < tscf->keys->nelts; i++) {
-        if (ngx_stream_mtrojan_key_equal(key, keys[i].data)) {
+        if (ngx_stream_trojan_key_equal(key, keys[i].data)) {
             return NGX_OK;
         }
     }
@@ -1119,7 +1120,7 @@ ngx_stream_mtrojan_process_socks5_in(ngx_stream_mtrojan_ctx_t *ctx)
                     return;
                 }
 
-                if (ctx->command == NGX_STREAM_MTROJAN_CMD_CONNECT) {
+                if (ctx->command == NGX_STREAM_TROJAN_CMD_CONNECT) {
                     ngx_stream_mtrojan_start_tcp(ctx);
                     return;
                 }
@@ -1211,8 +1212,8 @@ ngx_stream_mtrojan_process_socks5_in(ngx_stream_mtrojan_ctx_t *ctx)
             }
 
             ctx->command = command == NGX_STREAM_MTROJAN_SOCKS5_CMD_CONNECT
-                           ? NGX_STREAM_MTROJAN_CMD_CONNECT
-                           : NGX_STREAM_MTROJAN_CMD_ASSOCIATE;
+                           ? NGX_STREAM_TROJAN_CMD_CONNECT
+                           : NGX_STREAM_TROJAN_CMD_ASSOCIATE;
             ctx->conf = effective;
 
             rc = ngx_stream_mtrojan_select_outbound(
@@ -1310,7 +1311,7 @@ ngx_stream_mtrojan_process_http_in(ngx_stream_mtrojan_ctx_t *ctx)
                 continue;
             }
 
-            ctx->command = NGX_STREAM_MTROJAN_CMD_CONNECT;
+            ctx->command = NGX_STREAM_TROJAN_CMD_CONNECT;
             ctx->conf = effective;
 
             if (ctx->http_buffer->last > ctx->http_buffer->pos + needed
@@ -1549,7 +1550,7 @@ ngx_stream_mtrojan_socks5_in_prepare_response(ngx_stream_mtrojan_ctx_t *ctx,
 
     ngx_memzero(&bind_addr, sizeof(bind_addr));
     if (status == NGX_STREAM_MTROJAN_SOCKS5_STATUS_OK
-        && ctx->command == NGX_STREAM_MTROJAN_CMD_ASSOCIATE)
+        && ctx->command == NGX_STREAM_TROJAN_CMD_ASSOCIATE)
     {
         if (ngx_stream_mtrojan_socks5_udp_bind_addr(ctx, &bind_addr)
             != NGX_OK)
@@ -1625,12 +1626,12 @@ ngx_stream_mtrojan_process_prefix(ngx_stream_mtrojan_ctx_t *ctx)
     c = ctx->session->connection;
 
     for ( ;; ) {
-        if (ctx->prefix_len == NGX_STREAM_MTROJAN_PREFIX_LEN) {
+        if (ctx->prefix_len == NGX_STREAM_TROJAN_PREFIX_LEN) {
             break;
         }
 
         n = c->recv(c, ctx->prefix + ctx->prefix_len,
-                    NGX_STREAM_MTROJAN_PREFIX_LEN - ctx->prefix_len);
+                    NGX_STREAM_TROJAN_PREFIX_LEN - ctx->prefix_len);
 
         if (n == NGX_AGAIN) {
             if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
@@ -1645,7 +1646,7 @@ ngx_stream_mtrojan_process_prefix(ngx_stream_mtrojan_ctx_t *ctx)
         }
 
         for (i = ctx->prefix_len; i < ctx->prefix_len + (size_t) n; i++) {
-            if (ctx->prefix[i] == LF && i < NGX_STREAM_MTROJAN_KEY_LEN + 1) {
+            if (ctx->prefix[i] == LF && i < NGX_STREAM_TROJAN_KEY_LEN + 1) {
                 ctx->prefix_len += (size_t) n;
                 ngx_stream_mtrojan_start_fallback(ctx, ctx->prefix,
                                                  ctx->prefix_len);
@@ -1656,8 +1657,8 @@ ngx_stream_mtrojan_process_prefix(ngx_stream_mtrojan_ctx_t *ctx)
         ctx->prefix_len += (size_t) n;
     }
 
-    if (ctx->prefix[NGX_STREAM_MTROJAN_KEY_LEN] != CR
-        || ctx->prefix[NGX_STREAM_MTROJAN_KEY_LEN + 1] != LF
+    if (ctx->prefix[NGX_STREAM_TROJAN_KEY_LEN] != CR
+        || ctx->prefix[NGX_STREAM_TROJAN_KEY_LEN + 1] != LF
         || ngx_stream_mtrojan_key_valid(ctx->conf, ctx->prefix) != NGX_OK)
     {
         ngx_stream_mtrojan_start_fallback(ctx, ctx->prefix, ctx->prefix_len);
@@ -1679,8 +1680,8 @@ ngx_stream_mtrojan_request_needed(u_char *buf, size_t len, size_t *needed)
         return NGX_AGAIN;
     }
 
-    if (buf[0] != NGX_STREAM_MTROJAN_CMD_CONNECT
-        && buf[0] != NGX_STREAM_MTROJAN_CMD_ASSOCIATE)
+    if (buf[0] != NGX_STREAM_TROJAN_CMD_CONNECT
+        && buf[0] != NGX_STREAM_TROJAN_CMD_ASSOCIATE)
     {
         return NGX_ERROR;
     }
@@ -1767,7 +1768,7 @@ ngx_stream_mtrojan_process_request(ngx_stream_mtrojan_ctx_t *ctx)
         return;
     }
 
-    if (ngx_stream_mtrojan_parse_addr(ctx->request + 1, needed - 3,
+    if (ngx_stream_trojan_parse_addr(ctx->request + 1, needed - 3,
                                      &ctx->target)
         != 0)
     {
@@ -1799,7 +1800,7 @@ ngx_stream_mtrojan_request_after_route(ngx_stream_mtrojan_ctx_t *ctx)
         return;
     }
 
-    if (ctx->command == NGX_STREAM_MTROJAN_CMD_CONNECT) {
+    if (ctx->command == NGX_STREAM_TROJAN_CMD_CONNECT) {
         ngx_stream_mtrojan_start_tcp(ctx);
         return;
     }
@@ -1811,7 +1812,7 @@ ngx_stream_mtrojan_request_after_route(ngx_stream_mtrojan_ctx_t *ctx)
 static void
 ngx_stream_mtrojan_socks5_in_after_route(ngx_stream_mtrojan_ctx_t *ctx)
 {
-    if (ctx->command == NGX_STREAM_MTROJAN_CMD_ASSOCIATE
+    if (ctx->command == NGX_STREAM_TROJAN_CMD_ASSOCIATE
         && !ctx->inbound_socks5_udp_enable)
     {
         if (ngx_stream_mtrojan_socks5_in_prepare_response(ctx, 0x07)
@@ -1841,7 +1842,7 @@ ngx_stream_mtrojan_socks5_in_after_route(ngx_stream_mtrojan_ctx_t *ctx)
         return;
     }
 
-    if (ctx->command == NGX_STREAM_MTROJAN_CMD_ASSOCIATE
+    if (ctx->command == NGX_STREAM_TROJAN_CMD_ASSOCIATE
         && ngx_stream_mtrojan_init_udp_buffers(ctx) != NGX_OK)
     {
         ngx_stream_mtrojan_finalize(ctx, NGX_STREAM_INTERNAL_SERVER_ERROR);
@@ -1990,7 +1991,7 @@ ngx_stream_mtrojan_start_default_fallback(ngx_stream_mtrojan_ctx_t *ctx)
     ngx_connection_t *c;
 
     c = ctx->session->connection;
-    response = ngx_stream_mtrojan_default_fallback_response(&len);
+    response = ngx_stream_trojan_default_fallback_response(&len);
 
     ctx->pending_to_client = ngx_stream_mtrojan_create_temp_buf(c->pool, len);
     if (ctx->pending_to_client == NULL) {
@@ -3849,7 +3850,7 @@ ngx_stream_mtrojan_request_blocked(ngx_stream_mtrojan_ctx_t *ctx)
         return 1;
     }
 
-    if (ctx->command != NGX_STREAM_MTROJAN_CMD_ASSOCIATE) {
+    if (ctx->command != NGX_STREAM_TROJAN_CMD_ASSOCIATE) {
         return 0;
     }
 
@@ -4770,7 +4771,7 @@ ngx_stream_mtrojan_process_udp_client(ngx_stream_mtrojan_ctx_t *ctx)
     c = ctx->session->connection;
 
     for ( ;; ) {
-        rc = ngx_stream_mtrojan_parse_udp_frame(ctx->udp_in, ctx->udp_in_len,
+        rc = ngx_stream_trojan_parse_udp_frame(ctx->udp_in, ctx->udp_in_len,
                                                &frame);
 
         if (rc == 0) {
@@ -6478,7 +6479,7 @@ ngx_stream_mtrojan_udp_read_handler(ngx_event_t *ev)
             continue;
         }
 
-        if (ngx_stream_mtrojan_pack_udp_frame(&addr, ctx->udp_payload,
+        if (ngx_stream_trojan_pack_udp_frame(&addr, ctx->udp_payload,
                                              (uint16_t) n,
                                              ctx->udp_out,
                                              NGX_STREAM_MTROJAN_UDP_BUFFER_SIZE,
@@ -6605,7 +6606,7 @@ ngx_stream_mtrojan_socks5_udp_read_handler(ngx_event_t *ev)
         }
 
         ngx_memcpy(ctx->udp_payload, frame.payload, frame.payload_len);
-        if (ngx_stream_mtrojan_pack_udp_frame(
+        if (ngx_stream_trojan_pack_udp_frame(
                 &frame.addr, ctx->udp_payload, frame.payload_len,
                 ctx->udp_out, NGX_STREAM_MTROJAN_UDP_BUFFER_SIZE,
                 &written)
@@ -7197,7 +7198,7 @@ ngx_stream_mtrojan_password(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             return NGX_CONF_ERROR;
         }
 
-        if (ngx_stream_mtrojan_make_key_len(value[i].data, value[i].len,
+        if (ngx_stream_trojan_make_key_len(value[i].data, value[i].len,
                                            key->data)
             != 0)
         {
