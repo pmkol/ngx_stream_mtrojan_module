@@ -4623,6 +4623,8 @@ ngx_stream_trojan_create_udp_connection(ngx_stream_trojan_ctx_t *ctx,
 
     uc->data = ctx;
     uc->log = ctx->session->connection->log;
+    uc->read->log = uc->log;
+    uc->write->log = uc->log;
     uc->read->handler = handler;
     uc->write->handler = handler;
 
@@ -4700,6 +4702,8 @@ ngx_stream_trojan_create_bound_udp_connection(ngx_stream_trojan_ctx_t *ctx,
 
     uc->data = ctx;
     uc->log = ctx->session->connection->log;
+    uc->read->log = uc->log;
+    uc->write->log = uc->log;
     uc->read->handler = handler;
     uc->write->handler = handler;
 
